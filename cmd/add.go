@@ -8,12 +8,11 @@ import (
 	"github.com/tsukinoko-kun/jmod/logger"
 	"github.com/tsukinoko-kun/jmod/meta"
 	"github.com/tsukinoko-kun/jmod/registry"
+	"github.com/tsukinoko-kun/jmod/utils"
 )
 
 var addCmd = &cobra.Command{
-	Use: "add",
-	Aliases: []string{
-		"install"},
+	Use:   "add",
 	Short: "Add a new dependency",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// min 1 positional arg
@@ -28,11 +27,11 @@ var addCmd = &cobra.Command{
 		}
 
 		for _, arg := range args {
-			pack, err := registry.Resolve(arg)
+			pack, err := registry.FindInstallablePackage(arg)
 			if err != nil {
 				return err
 			}
-			config.Install(c, pack)
+			config.Install(c, pack, utils.Must(cmd.Flags().GetBool("dev")))
 			logger.Printf("added %s package %s version %s\n", pack.Source, pack.PackageName, pack.Version)
 		}
 		if err := config.Write(c); err != nil {
@@ -46,4 +45,5 @@ var addCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(addCmd)
 	addCmd.Flags().String("mod", ".", "module to add the dependency to")
+	addCmd.Flags().BoolP("dev", "D", false, "add as a dev dependency")
 }

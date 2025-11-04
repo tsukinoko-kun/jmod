@@ -1,6 +1,9 @@
 package registry
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 type Package struct {
 	PackageName string
@@ -8,12 +11,16 @@ type Package struct {
 	Source      string
 }
 
-func Resolve(identifier string) (Package, error) {
+func (p Package) String() string {
+	return fmt.Sprintf("%s:%s@%s", p.Source, p.PackageName, p.Version)
+}
+
+func FindInstallablePackage(identifier string) (Package, error) {
 	if npmIdentifyer, ok := strings.CutPrefix(identifier, "npm:"); ok {
-		return resolveNpm(npmIdentifyer)
+		return findInstallablePackageNpm(npmIdentifyer)
 	}
 	// fallback to npm
-	return resolveNpm(identifier)
+	return findInstallablePackageNpm(identifier)
 }
 
 func resolveVersion(identifier string) string {
@@ -26,7 +33,7 @@ func resolveVersion(identifier string) string {
 	return "latest"
 }
 
-func resolveNpm(identifier string) (Package, error) {
+func findInstallablePackageNpm(identifier string) (Package, error) {
 	version := resolveVersion(identifier)
 	version, err := Npm_GetVersion(identifier, version)
 	if err != nil {
@@ -37,4 +44,37 @@ func resolveNpm(identifier string) (Package, error) {
 		Version:     version,
 		Source:      "npm",
 	}, nil
+}
+
+type SourceFormat uint8
+
+const (
+	SourceFormatUnknown SourceFormat = iota
+	SourceFormatTarGz
+	SourceFormatTarXz
+)
+
+type ChecksumFormat uint8
+
+const (
+	ChecksumFormatUnknown ChecksumFormat = iota
+	ChecksumFormatSha256
+	ChecksumFormatSha512
+)
+
+type Resolveable interface {
+	// String representation of the package
+	String() string
+	// Name of the package
+	GetName() string
+	// Version of the package
+	GetVersion() string
+	// URL to download the package archive
+	GetSource() string
+	// Format of the package archive
+	GetSourceFormat() SourceFormat
+	// Format of the checksum
+	GetChecksumFormat() ChecksumFormat
+	// Checksum of the package archive as provided by the registry
+	GetChecksum() []byte
 }

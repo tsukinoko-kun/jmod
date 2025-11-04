@@ -1,15 +1,21 @@
 package config
 
 import (
+	"context"
 	_json "encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/tsukinoko-kun/jmod/ignore"
+	"github.com/tsukinoko-kun/jmod/logger"
 	"github.com/tsukinoko-kun/jmod/meta"
 	"github.com/tsukinoko-kun/jmod/registry"
+	"github.com/tsukinoko-kun/jmod/utils"
 	json "github.com/tsukinoko-kun/jsonedit"
 )
 
@@ -26,6 +32,124 @@ type Mod struct {
 
 func (m *Mod) GetFileLocation() string {
 	return m.fileLocation
+}
+
+func (m *Mod) ListDependencies(yield func(registry.Package) bool) {
+	for dep := range m.NpmAutoDependencies {
+		if !yield(registry.Package{
+			PackageName: dep,
+			Version:     m.NpmAutoDependencies[dep],
+			Source:      "npm",
+		}) {
+			return
+		}
+	}
+	for dep := range m.NpmManualDependencies {
+		if !yield(registry.Package{
+			PackageName: dep,
+			Version:     m.NpmManualDependencies[dep],
+			Source:      "npm",
+		}) {
+			return
+		}
+	}
+}
+
+type ResolvedDependency struct {
+	PackageName    string
+	CachedLocation string
+}
+
+func (m *Mod) ResolveDependenciesDeep(ctx context.Context) <-chan ResolvedDependency {
+	wg := sync.WaitGroup{}
+
+	ch := make(chan ResolvedDependency, 32)
+
+depLoop:
+	for packageName, version := range utils.Join2(utils.IterMap(m.NpmAutoDependencies), utils.IterMap(m.NpmManualDependencies)) {
+		select {
+		case <-ctx.Done():
+			break depLoop
+		default:
+		}
+
+		constPackageName := packageName
+		wg.Go(func() {
+			if strings.HasPrefix(version, "file:") {
+				absPath := filepath.Join(filepath.Dir(m.GetFileLocation()), version[5:])
+				if _, err := os.Stat(absPath); err == nil {
+					select {
+					case ch <- ResolvedDependency{constPackageName, absPath}:
+					case <-ctx.Done():
+					}
+				} else {
+					logger.Printf("local file dep %s not found for mod %s\n", version, m.GetFileLocation())
+				}
+				return
+			} else if strings.HasPrefix(version, "git:") {
+				fmt.Println("TODO git", version)
+				// TODO
+				return
+			} else if strings.HasPrefix(version, "github:") {
+				fmt.Println("TODO github", version)
+				// TODO
+				return
+			} else if alias, ok := strings.CutPrefix(version, "npm:"); ok {
+				if lastAtIndex := strings.LastIndex(alias, "@"); lastAtIndex > 0 {
+					packageName = alias[:lastAtIndex]
+					version = alias[lastAtIndex+1:]
+				} else {
+					packageName = alias
+					version = "latest"
+				}
+			}
+			versionConstraint, err := semver.NewConstraint(version)
+			if err != nil {
+				// might be a label/tag
+				if tagVersion, reqErr := registry.Npm_GetVersion(packageName, version); reqErr == nil {
+					var newErr error
+					versionConstraint, newErr = semver.NewConstraint(tagVersion)
+					if newErr != nil {
+						logger.Errorf("invalid version constraint %s for %s in %s, skipping\n", version, packageName, m.GetFileLocation())
+						return
+					}
+				} else {
+					logger.Errorf("invalid version constraint %s for %s in %s, skipping\n", version, packageName, m.GetFileLocation())
+					return
+				}
+			}
+			if ok, cachedLocation := registry.CacheHas("npm", packageName, versionConstraint); ok {
+				select {
+				case ch <- ResolvedDependency{constPackageName, cachedLocation}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			resolver, err := registry.Npm_Resolve(ctx, packageName, versionConstraint)
+			if err != nil {
+				logger.Errorf("failed to resolve %s@%s: %s\n", packageName, version, err)
+				return
+			}
+			start := time.Now()
+			cachedLocation, err := registry.CachePut(ctx, "npm", resolver)
+			if err != nil {
+				logger.Errorf("failed to cache %s@%s: %s\n", packageName, resolver.GetVersion(), err)
+				return
+			}
+			logger.Printf("downloaded %s in %s\n", resolver.String(), time.Since(start))
+			select {
+			case ch <- ResolvedDependency{constPackageName, cachedLocation}:
+			case <-ctx.Done():
+			}
+		})
+	}
+
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	return ch
 }
 
 func Load(path string) (*json.Document[*Mod], error) {
@@ -95,6 +219,9 @@ func FindSubMods(root string) []*json.Document[*Mod] {
 
 	subMods := []*json.Document[*Mod]{}
 	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
 		if d.IsDir() {
 			gitPath := strings.Split(
 				strings.TrimPrefix(path, root),
@@ -116,18 +243,28 @@ func FindSubMods(root string) []*json.Document[*Mod] {
 	return subMods
 }
 
-func Install(mod *json.Document[*Mod], pack registry.Package) error {
+func Install(mod *json.Document[*Mod], pack registry.Package, dev bool) error {
 	if pack.Source != "npm" {
 		return fmt.Errorf("unsupported package source: %s", pack.Source)
 	}
 
-	// check if the package is already installed
-	if _, ok := mod.TypedData.NpmAutoDependencies[pack.PackageName]; ok {
-		// update the version
-		mod.TypedData.NpmAutoDependencies[pack.PackageName] = pack.Version
+	if dev {
+		if mod.TypedData.NpmAutoDependencies != nil {
+			delete(mod.TypedData.NpmAutoDependencies, pack.PackageName)
+		}
+		if mod.TypedData.NpmManualDependencies == nil {
+			mod.TypedData.NpmManualDependencies = map[string]string{}
+		}
+		mod.TypedData.NpmManualDependencies[pack.PackageName] = pack.Version
 		return nil
 	}
 
-	mod.TypedData.NpmManualDependencies[pack.PackageName] = pack.Version
+	if mod.TypedData.NpmManualDependencies != nil {
+		delete(mod.TypedData.NpmManualDependencies, pack.PackageName)
+	}
+	if mod.TypedData.NpmAutoDependencies == nil {
+		mod.TypedData.NpmAutoDependencies = map[string]string{}
+	}
+	mod.TypedData.NpmAutoDependencies[pack.PackageName] = pack.Version
 	return nil
 }
