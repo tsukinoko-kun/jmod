@@ -25,6 +25,7 @@ import (
 )
 
 var cacheLocation string
+var tarballCacheLocation string
 
 var (
 	cacheLocks = map[string]*sync.Mutex{}
@@ -63,6 +64,38 @@ func getCacheLocation() string {
 		panic(err)
 	}
 	return cacheLocation
+}
+
+// GetTarballCacheLocation returns the directory where NPM tarballs are cached.
+// For testing, you can override this by setting the JMOD_TARBALL_CACHE environment variable.
+// To clear the cache during testing, simply delete this directory.
+func GetTarballCacheLocation() string {
+	return getTarballCacheLocation()
+}
+
+func getTarballCacheLocation() string {
+	if tarballCacheLocation != "" {
+		return tarballCacheLocation
+	}
+
+	// Check for environment variable override (useful for testing)
+	if envCache := os.Getenv("JMOD_TARBALL_CACHE"); envCache != "" {
+		tarballCacheLocation = envCache
+		if err := os.MkdirAll(tarballCacheLocation, 0755); err != nil {
+			panic(err)
+		}
+		return tarballCacheLocation
+	}
+
+	userCacheDir, err := os.UserCacheDir()
+	if err != nil {
+		panic(err)
+	}
+	tarballCacheLocation = filepath.Join(userCacheDir, "jmod-tarballs")
+	if err := os.MkdirAll(tarballCacheLocation, 0755); err != nil {
+		panic(err)
+	}
+	return tarballCacheLocation
 }
 
 func CacheHas(registry string, packageName string, versionConstrains *semver.Constraints) (bool, string) {
@@ -171,6 +204,33 @@ func downloadToTempWithChecksum(
 		return "", nil, err
 	}
 
+	// Check tarball cache first
+	cachedTarball, cachedSum := getCachedTarball(url, cf)
+	if cachedTarball != "" {
+		// Verify checksum of cached tarball
+		f, err := os.Open(cachedTarball)
+		if err == nil {
+			defer f.Close()
+			h.Reset()
+			if _, err := io.Copy(h, f); err == nil {
+				gotSum := h.Sum(nil)
+				if len(gotSum) == digestSize && subtle.ConstantTimeCompare(cachedSum, gotSum) == 1 {
+					// Cache hit - copy to temp location for caller
+					tmpFile, err := os.CreateTemp(destDir, ".download-*.tmp")
+					if err == nil {
+						tmpPath = tmpFile.Name()
+						tmpFile.Close()
+						if err := copyFile(cachedTarball, tmpPath); err == nil {
+							return tmpPath, cachedSum, nil
+						}
+						os.Remove(tmpPath)
+					}
+				}
+			}
+		}
+		// If cache verification failed, continue to download
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", nil, fmt.Errorf("new request: %w", err)
@@ -216,7 +276,127 @@ func downloadToTempWithChecksum(
 	if len(sum) != digestSize {
 		return "", nil, fmt.Errorf("unexpected digest size")
 	}
+
+	// Save to tarball cache for future use
+	saveTarballToCache(url, tmpPath, sum, cf)
+
 	return tmpPath, sum, nil
+}
+
+func getCachedTarball(url string, cf ChecksumFormat) (string, []byte) {
+	tarballCacheDir := getTarballCacheLocation()
+
+	// Create a filename based on URL hash (to avoid path issues)
+	urlHash := fmt.Sprintf("%x", sha256.Sum256([]byte(url)))
+
+	// Try both checksum formats (since we might have cached with a different format)
+	for _, format := range []ChecksumFormat{cf, ChecksumFormatSha512, ChecksumFormatSha256} {
+		if format == ChecksumFormatUnknown {
+			continue
+		}
+
+		var ext string
+		switch format {
+		case ChecksumFormatSha256:
+			ext = ".sha256"
+		case ChecksumFormatSha512:
+			ext = ".sha512"
+		default:
+			continue
+		}
+
+		cacheFile := filepath.Join(tarballCacheDir, urlHash+ext+".tgz")
+
+		// Check if cached file exists
+		if _, err := os.Stat(cacheFile); err != nil {
+			continue
+		}
+
+		// Read checksum from companion file
+		checksumFile := cacheFile + ".checksum"
+		checksumData, err := os.ReadFile(checksumFile)
+		if err != nil {
+			continue
+		}
+
+		// Parse checksum based on stored format
+		sum, err := normalizeExpectedChecksum(checksumData, format)
+		if err != nil {
+			continue
+		}
+
+		// Verify the format matches what we expect
+		expSize := 0
+		switch cf {
+		case ChecksumFormatSha256:
+			expSize = sha256.Size
+		case ChecksumFormatSha512:
+			expSize = sha512.Size
+		default:
+			continue
+		}
+
+		if len(sum) != expSize {
+			continue
+		}
+
+		return cacheFile, sum
+	}
+
+	return "", nil
+}
+
+func saveTarballToCache(url string, tmpPath string, sum []byte, cf ChecksumFormat) {
+	if cf == ChecksumFormatUnknown {
+		return
+	}
+
+	tarballCacheDir := getTarballCacheLocation()
+
+	// Create a filename based on URL hash with checksum format extension
+	urlHash := fmt.Sprintf("%x", sha256.Sum256([]byte(url)))
+
+	var ext string
+	switch cf {
+	case ChecksumFormatSha256:
+		ext = ".sha256"
+	case ChecksumFormatSha512:
+		ext = ".sha512"
+	default:
+		return
+	}
+
+	cacheFile := filepath.Join(tarballCacheDir, urlHash+ext+".tgz")
+	checksumFile := cacheFile + ".checksum"
+
+	// Copy tarball to cache
+	if err := copyFile(tmpPath, cacheFile); err != nil {
+		return
+	}
+
+	// Save checksum
+	sumHex := hex.EncodeToString(sum)
+	if err := os.WriteFile(checksumFile, []byte(sumHex), 0644); err != nil {
+		os.Remove(cacheFile) // Clean up on error
+		return
+	}
+}
+
+func copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	return err
 }
 
 func hasherFor(cf ChecksumFormat) (h hash.Hash, size int, err error) {
@@ -345,7 +525,15 @@ func extractTarStream(r io.Reader, destDir string) error {
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, fi.Mode().Perm()); err != nil {
+			// Ensure directories have write permission for the owner so files can be created inside them.
+			// Tar archives may have directories with restrictive permissions (e.g., 0500) which
+			// would prevent creating files inside them during extraction.
+			dirPerm := fi.Mode().Perm()
+			if dirPerm&0o200 == 0 {
+				// If write permission is missing for owner, add it
+				dirPerm = dirPerm | 0o200
+			}
+			if err := os.MkdirAll(target, dirPerm); err != nil {
 				return fmt.Errorf("mkdir: %w", err)
 			}
 

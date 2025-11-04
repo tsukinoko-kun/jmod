@@ -42,6 +42,15 @@ modsLoop:
 					errsMut.Unlock()
 					return
 				}
+				// run lifecycle scripts before installing nested dependencies so preinstall can prepare assets
+				if !ignoreScripts {
+					if err := lifecyclePreinstall(dependency.CachedLocation); err != nil {
+						errsMut.Lock()
+						errs = append(errs, err)
+						errsMut.Unlock()
+						return
+					}
+				}
 				// recursive install
 				if err := Run(ctx, dependency.CachedLocation, ignoreScripts); err != nil {
 					errsMut.Lock()
@@ -56,9 +65,8 @@ modsLoop:
 					errsMut.Unlock()
 					return
 				}
-				// install lifecycle
 				if !ignoreScripts {
-					if err := installLifecycle(dependency.CachedLocation); err != nil {
+					if err := lifecyclePostinstall(dependency.CachedLocation); err != nil {
 						errsMut.Lock()
 						errs = append(errs, err)
 						errsMut.Unlock()
@@ -122,10 +130,10 @@ func (p *packageJson) UnmarshalJSON(data []byte) error {
 func getPackageJson(root string) (packageJson, error) {
 	packageJsonPath := filepath.Join(root, "package.json")
 	f, err := os.Open(packageJsonPath)
-	defer f.Close()
 	if err != nil {
 		return packageJson{}, err
 	}
+	defer f.Close()
 	var pj packageJson
 	jd := json.NewDecoder(f)
 	err = jd.Decode(&pj)
@@ -157,12 +165,28 @@ func setupBin(root string) error {
 	return nil
 }
 
-func installLifecycle(root string) error {
-	scriptsrunner.Run(root, "preinstall", nil, map[string]string{
-		"npm_lifecycle_event": "preinstall",
+func lifecyclePreinstall(root string) error {
+	return runLifecycleScript(root, "preinstall")
+}
+
+func lifecyclePostinstall(root string) error {
+	if err := runLifecycleScript(root, "install"); err != nil {
+		return err
+	}
+	return runLifecycleScript(root, "postinstall")
+}
+
+func runLifecycleScript(root, scriptName string) error {
+	env := map[string]string{
+		"npm_lifecycle_event": scriptName,
 		"npm_config_target":   root,
 		"npm_config_modules":  root,
-	})
-
+	}
+	if err := scriptsrunner.Run(root, scriptName, nil, env); err != nil {
+		if errors.Is(err, scriptsrunner.ErrScriptNotFound) {
+			return nil
+		}
+		return err
+	}
 	return nil
 }

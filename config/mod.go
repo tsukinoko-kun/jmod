@@ -273,3 +273,13 @@ func Install(mod *json.Document[*Mod], pack registry.Package, dev bool) error {
 	mod.TypedData.NpmAutoDependencies[pack.PackageName] = pack.Version
 	return nil
 }
+
+func Uninstall(mod *json.Document[*Mod], name string) error {
+	if mod.TypedData.NpmAutoDependencies != nil {
+		delete(mod.TypedData.NpmAutoDependencies, name)
+	}
+	if mod.TypedData.NpmManualDependencies != nil {
+		delete(mod.TypedData.NpmManualDependencies, name)
+	}
+	return nil
+}

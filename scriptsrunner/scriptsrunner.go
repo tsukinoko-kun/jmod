@@ -19,10 +19,10 @@ type packageJson struct {
 func getPackageJson(root string) (packageJson, error) {
 	packageJsonPath := filepath.Join(root, "package.json")
 	f, err := os.Open(packageJsonPath)
-	defer f.Close()
 	if err != nil {
 		return packageJson{}, err
 	}
+	defer f.Close()
 	var pj packageJson
 	jd := json.NewDecoder(f)
 	err = jd.Decode(&pj)
@@ -33,6 +33,8 @@ func getPackageJson(root string) (packageJson, error) {
 }
 
 var jsExts = []string{".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"}
+
+var ErrScriptNotFound = errors.New("script not found")
 
 func Run(root string, scriptName string, args []string, env map[string]string) error {
 	// combine env with the current process env
@@ -49,7 +51,7 @@ func Run(root string, scriptName string, args []string, env map[string]string) e
 
 	script, ok := pj.Scripts[scriptName]
 	if !ok {
-		return fmt.Errorf("script %s not found", scriptName)
+		return fmt.Errorf("%w: %s", ErrScriptNotFound, scriptName)
 	}
 
 	if env != nil {
