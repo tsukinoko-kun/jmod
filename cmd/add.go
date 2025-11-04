@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tsukinoko-kun/jmod/config"
+	"github.com/tsukinoko-kun/jmod/install"
 	"github.com/tsukinoko-kun/jmod/logger"
 	"github.com/tsukinoko-kun/jmod/meta"
 	"github.com/tsukinoko-kun/jmod/registry"
@@ -38,6 +39,8 @@ var addCmd = &cobra.Command{
 			return err
 		}
 
+		install.Run(cmd.Context(), meta.Pwd(), utils.Must(cmd.Flags().GetBool("ignore-scripts")))
+
 		return nil
 	},
 }
@@ -46,4 +49,5 @@ func init() {
 	rootCmd.AddCommand(addCmd)
 	addCmd.Flags().String("mod", ".", "module to add the dependency to")
 	addCmd.Flags().BoolP("dev", "D", false, "add as a dev dependency")
+	addCmd.Flags().Bool("ignore-scripts", false, "Ignore scripts in package.json")
 }

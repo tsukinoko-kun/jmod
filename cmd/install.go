@@ -1,11 +1,6 @@
 package cmd
 
 import (
-	"context"
-	"os"
-	"os/signal"
-	"syscall"
-
 	"github.com/spf13/cobra"
 	"github.com/tsukinoko-kun/jmod/install"
 	"github.com/tsukinoko-kun/jmod/meta"
@@ -21,15 +16,7 @@ var installCmd = &cobra.Command{
 	},
 	Short: "Install dependencies from package.json",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx, cancel := context.WithCancel(cmd.Context())
-		defer cancel()
-		go func() {
-			c := make(chan os.Signal, 1)
-			signal.Notify(c, os.Interrupt, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
-			<-c
-			cancel()
-		}()
-		return install.Run(ctx, meta.Pwd(), utils.Must(cmd.Flags().GetBool("ignore-scripts")))
+		return install.Run(cmd.Context(), meta.Pwd(), utils.Must(cmd.Flags().GetBool("ignore-scripts")))
 	},
 }
 

@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	_json "encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -75,8 +76,8 @@ depLoop:
 
 		constPackageName := packageName
 		wg.Go(func() {
-			if strings.HasPrefix(version, "file:") {
-				absPath := filepath.Join(filepath.Dir(m.GetFileLocation()), version[5:])
+			if strings.HasPrefix(version, "file:") || strings.HasPrefix(version, "./") || strings.HasPrefix(version, "../") || strings.HasPrefix(version, "/") {
+				absPath := filepath.Join(filepath.Dir(m.GetFileLocation()), strings.TrimPrefix(version, "file:"))
 				if _, err := os.Stat(absPath); err == nil {
 					select {
 					case ch <- ResolvedDependency{constPackageName, absPath}:
@@ -127,13 +128,17 @@ depLoop:
 			}
 			resolver, err := registry.Npm_Resolve(ctx, packageName, versionConstraint)
 			if err != nil {
-				logger.Errorf("failed to resolve %s@%s: %s\n", packageName, version, err)
+				if !errors.Is(err, context.Canceled) {
+					logger.Errorf("failed to resolve %s@%s: %s\n", packageName, version, err)
+				}
 				return
 			}
 			start := time.Now()
 			cachedLocation, err := registry.CachePut(ctx, "npm", resolver)
 			if err != nil {
-				logger.Errorf("failed to cache %s@%s: %s\n", packageName, resolver.GetVersion(), err)
+				if !errors.Is(err, context.Canceled) {
+					logger.Errorf("failed to cache %s@%s: %s\n", packageName, resolver.GetVersion(), err)
+				}
 				return
 			}
 			logger.Printf("downloaded %s in %s\n", resolver.String(), time.Since(start))
