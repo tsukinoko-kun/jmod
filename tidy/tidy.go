@@ -91,7 +91,7 @@ func Run(root string) error {
 					}
 				}(path, parser)
 			} else {
-				logger.Printf("no parser for %s\n", ext)
+				logger.Printf("no parser for %s", ext)
 			}
 
 			return nil
@@ -110,7 +110,7 @@ func Run(root string) error {
 			continue
 		}
 
-		logger.Printf("found %d imports for %s\n", len(modImports), utils.Must(filepath.Rel(meta.Pwd(), mod.GetFileLocation())))
+		logger.Printf("found %d imports for %s", len(modImports), utils.Must(filepath.Rel(meta.Pwd(), mod.GetFileLocation())))
 
 		if mod.NpmAutoDependencies == nil {
 			mod.NpmAutoDependencies = make(map[string]string)
@@ -128,11 +128,11 @@ func Run(root string) error {
 			if _, included := mod.NpmAutoDependencies[imp]; !included {
 				latestVersion, err := registry.Npm_GetLatestVersion(imp)
 				if err != nil {
-					logger.Printf("failed to get latest version for %s: %s\n", imp, err)
+					logger.Printf("failed to get latest version for %s: %s", imp, err)
 					continue
 				}
 				mod.NpmAutoDependencies[imp] = latestVersion
-				logger.Printf("  new package %s (version %s)\n", imp, latestVersion)
+				logger.Printf("  new package %s (version %s)", imp, latestVersion)
 			}
 		}
 

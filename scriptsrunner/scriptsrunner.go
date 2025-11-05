@@ -8,8 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-
-	"github.com/tsukinoko-kun/jmod/logger"
+	"strings"
 )
 
 type packageJson struct {
@@ -38,10 +37,15 @@ var ErrScriptNotFound = errors.New("script not found")
 
 func Run(root string, scriptName string, args []string, env map[string]string) error {
 	// combine env with the current process env
-	completeEnv := os.Environ()
+	completeEnv := make([]string, 0, len(getDefaultEnv()))
 	completeEnv = append(completeEnv, getDefaultEnv()...)
 	for k, v := range env {
 		completeEnv = append(completeEnv, fmt.Sprintf("%s=%s", k, v))
+	}
+	for i, e := range completeEnv {
+		if v, ok := strings.CutPrefix(e, "PATH="); ok {
+			completeEnv[i] = "PATH=" + filepath.Join(root, "node_modules", ".bin") + string(filepath.ListSeparator) + v
+		}
 	}
 
 	pj, err := getPackageJson(root)
@@ -89,14 +93,15 @@ func runJsScript(root string, scriptName string, args []string, env []string) er
 	arg := append([]string{scriptName}, args...)
 	cmd := exec.Command(getDefaultJsRunner(), arg...)
 	cmd.Dir = root
-	if logger.Verbose {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
 	cmd.Env = env
-	if out, err := cmd.CombinedOutput(); err == nil {
-		return nil
-	} else {
-		return errors.Join(errors.New(string(out)), err)
+
+	// Capture output and log errors
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if len(out) > 0 {
+			return fmt.Errorf("%s: %w", string(out), err)
+		}
+		return err
 	}
+	return nil
 }

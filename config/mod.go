@@ -1,10 +1,12 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	_json "encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,18 +58,140 @@ func (m *Mod) ListDependencies(yield func(registry.Package) bool) {
 	}
 }
 
-type ResolvedDependency struct {
-	PackageName    string
-	CachedLocation string
+type (
+	ResolvedDependency struct {
+		PackageName    string
+		CachedLocation string
+	}
+
+	ResolvedDependencyBin struct {
+		BinName string
+		BinPath string
+	}
+)
+
+type packageJsonForLifecycle struct {
+	Name    *string            `json:"name,omitempty"`
+	Version *string            `json:"version,omitempty"`
+	Scripts *map[string]string `json:"scripts,omitempty"`
 }
 
-func (m *Mod) ResolveDependenciesDeep(ctx context.Context) <-chan ResolvedDependency {
+type packageJsonForBin struct {
+	Name *string           `json:"name"`
+	Bin  map[string]string `json:"bin"`
+}
+
+func (p *packageJsonForBin) UnmarshalJSON(data []byte) error {
+	// intermediate type to capture raw bin bytes
+	type rawPkg struct {
+		Name *string          `json:"name"`
+		Bin  _json.RawMessage `json:"bin"`
+	}
+
+	var r rawPkg
+	if err := _json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+
+	p.Name = r.Name
+
+	// no bin field or explicit null -> leave as nil
+	if len(r.Bin) == 0 || bytes.Equal(bytes.TrimSpace(r.Bin), []byte("null")) {
+		p.Bin = nil
+		return nil
+	}
+
+	// Try to unmarshal as map[string]string first
+	var m map[string]string
+	if err := _json.Unmarshal(r.Bin, &m); err == nil {
+		p.Bin = m
+		return nil
+	}
+
+	// Otherwise try as single string
+	var s string
+	if err := _json.Unmarshal(r.Bin, &s); err == nil {
+		if p.Name == nil {
+			return fmt.Errorf("bin is a string but package name is missing")
+		}
+		p.Bin = map[string]string{*p.Name: s}
+		return nil
+	}
+
+	return fmt.Errorf("bin field has an unexpected JSON type")
+}
+
+func getPackageJsonForBin(packageJsonPath string) (packageJsonForBin, error) {
+	f, err := os.Open(packageJsonPath)
+	if err != nil {
+		return packageJsonForBin{}, err
+	}
+	defer f.Close()
+	var pj packageJsonForBin
+	jd := _json.NewDecoder(f)
+	err = jd.Decode(&pj)
+	if err != nil {
+		return packageJsonForBin{}, fmt.Errorf("decode %s: %w", packageJsonPath, err)
+	}
+	return pj, nil
+}
+
+func GetPackageJsonForLifecycle(root string) (packageJsonForLifecycle, error) {
+	packageJsonPath, err := getPackageFilePath(root)
+	if err != nil {
+		return packageJsonForLifecycle{}, err
+	}
+	f, err := os.Open(packageJsonPath)
+	if err != nil {
+		return packageJsonForLifecycle{}, err
+	}
+	defer f.Close()
+	var pj packageJsonForLifecycle
+	jd := _json.NewDecoder(f)
+	err = jd.Decode(&pj)
+	if err != nil {
+		return packageJsonForLifecycle{}, fmt.Errorf("decode %s: %w", packageJsonPath, err)
+	}
+	return pj, nil
+}
+
+func ResolveBins(ctx context.Context, root string) ([]ResolvedDependencyBin, error) {
+	packageJsonPath, err := getPackageFilePath(root)
+	if err != nil {
+		return nil, err
+	}
+	pj, err := getPackageJsonForBin(packageJsonPath)
+	if err != nil {
+		return nil, err
+	}
+	var bins []ResolvedDependencyBin
+	for binName, binRelativePath := range pj.Bin {
+		binAbsolutePath := filepath.Join(root, binRelativePath)
+		if err := utils.EnsureExecutable(binAbsolutePath); err != nil {
+			return nil, err
+		}
+		bins = append(bins, ResolvedDependencyBin{
+			BinName: binName,
+			BinPath: binAbsolutePath,
+		})
+	}
+	return bins, nil
+}
+
+func (m *Mod) ResolveDependenciesDeep(ctx context.Context, dev bool) <-chan ResolvedDependency {
 	wg := sync.WaitGroup{}
 
-	ch := make(chan ResolvedDependency, 32)
+	ch := make(chan ResolvedDependency, 16)
+
+	var dependencyIter iter.Seq2[string, string]
+	if dev {
+		dependencyIter = utils.Join2(utils.IterMap(m.NpmAutoDependencies), utils.IterMap(m.NpmManualDependencies))
+	} else {
+		dependencyIter = utils.IterMap(m.NpmAutoDependencies)
+	}
 
 depLoop:
-	for packageName, version := range utils.Join2(utils.IterMap(m.NpmAutoDependencies), utils.IterMap(m.NpmManualDependencies)) {
+	for packageName, version := range dependencyIter {
 		select {
 		case <-ctx.Done():
 			break depLoop
@@ -84,7 +208,7 @@ depLoop:
 					case <-ctx.Done():
 					}
 				} else {
-					logger.Printf("local file dep %s not found for mod %s\n", version, m.GetFileLocation())
+					logger.Printf("local file dep %s not found for mod %s", version, m.GetFileLocation())
 				}
 				return
 			} else if strings.HasPrefix(version, "git:") {
@@ -111,11 +235,11 @@ depLoop:
 					var newErr error
 					versionConstraint, newErr = semver.NewConstraint(tagVersion)
 					if newErr != nil {
-						logger.Errorf("invalid version constraint %s for %s in %s, skipping\n", version, packageName, m.GetFileLocation())
+						logger.Errorf("invalid version constraint %s for %s in %s, skipping", version, packageName, m.GetFileLocation())
 						return
 					}
 				} else {
-					logger.Errorf("invalid version constraint %s for %s in %s, skipping\n", version, packageName, m.GetFileLocation())
+					logger.Errorf("invalid version constraint %s for %s in %s, skipping", version, packageName, m.GetFileLocation())
 					return
 				}
 			}
@@ -129,7 +253,7 @@ depLoop:
 			resolver, err := registry.Npm_Resolve(ctx, packageName, versionConstraint)
 			if err != nil {
 				if !errors.Is(err, context.Canceled) {
-					logger.Errorf("failed to resolve %s@%s: %s\n", packageName, version, err)
+					logger.Errorf("failed to resolve %s@%s: %s", packageName, version, err)
 				}
 				return
 			}
@@ -137,11 +261,11 @@ depLoop:
 			cachedLocation, err := registry.CachePut(ctx, "npm", resolver)
 			if err != nil {
 				if !errors.Is(err, context.Canceled) {
-					logger.Errorf("failed to cache %s@%s: %s\n", packageName, resolver.GetVersion(), err)
+					logger.Errorf("failed to cache %s@%s: %s", packageName, resolver.GetVersion(), err)
 				}
 				return
 			}
-			logger.Printf("downloaded %s in %s\n", resolver.String(), time.Since(start))
+			logger.Printf("downloaded %s in %s", resolver.String(), time.Since(start))
 			select {
 			case ch <- ResolvedDependency{constPackageName, cachedLocation}:
 			case <-ctx.Done():

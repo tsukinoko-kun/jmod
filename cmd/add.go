@@ -21,6 +21,8 @@ var addCmd = &cobra.Command{
 			return cmd.Help()
 		}
 
+		ctx := cmd.Context()
+
 		mod := cmd.Flag("mod").Value.String()
 		c, err := config.Load(filepath.Join(meta.Pwd(), mod))
 		if err != nil {
@@ -33,13 +35,13 @@ var addCmd = &cobra.Command{
 				return err
 			}
 			config.Install(c, pack, utils.Must(cmd.Flags().GetBool("dev")))
-			logger.Printf("added %s package %s version %s\n", pack.Source, pack.PackageName, pack.Version)
+			logger.Printf("added %s package %s version %s", pack.Source, pack.PackageName, pack.Version)
 		}
 		if err := config.Write(c); err != nil {
 			return err
 		}
 
-		install.Run(cmd.Context(), meta.Pwd(), utils.Must(cmd.Flags().GetBool("ignore-scripts")))
+		install.Run(ctx, meta.Pwd(), utils.Must(cmd.Flags().GetBool("ignore-scripts")), true)
 
 		return nil
 	},

@@ -26,9 +26,13 @@ func pickRunner() (shellRunner, error) {
 			cmd := exec.Command(p, argv...)
 			cmd.Dir = root
 			cmd.Env = env
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
+
+			// Capture output and log errors
+			out, err := cmd.CombinedOutput()
+			if err != nil && len(out) > 0 {
+				return fmt.Errorf("%s: %w", string(out), err)
+			}
+			return err
 		}, nil
 	}
 
@@ -46,9 +50,13 @@ func pickRunner() (shellRunner, error) {
 			cmd := exec.Command(p, argv...)
 			cmd.Dir = root
 			cmd.Env = env
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
+
+			// Capture output and log errors
+			out, err := cmd.CombinedOutput()
+			if err != nil && len(out) > 0 {
+				return fmt.Errorf("%s: %w", string(out), err)
+			}
+			return err
 		}, nil
 	}
 
@@ -75,9 +83,13 @@ func pickRunner() (shellRunner, error) {
 			cmd := exec.Command(p, argv...)
 			cmd.Dir = root
 			cmd.Env = env
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
+
+			// Capture output and log errors
+			out, err := cmd.CombinedOutput()
+			if err != nil && len(out) > 0 {
+				return fmt.Errorf("%s: %w", string(out), err)
+			}
+			return err
 		}, nil
 	}
 

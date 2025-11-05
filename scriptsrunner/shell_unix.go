@@ -3,6 +3,7 @@
 package scriptsrunner
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 )
@@ -37,7 +38,12 @@ func runShell(root, script string, args []string, env []string) error {
 	cmd := exec.Command(sh, argv...)
 	cmd.Dir = root
 	cmd.Env = env
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+
+	// Capture output and log errors
+	out, err := cmd.CombinedOutput()
+	if err != nil && len(out) > 0 {
+		// Import added at top of file
+		return fmt.Errorf("%s: %w", string(out), err)
+	}
+	return err
 }

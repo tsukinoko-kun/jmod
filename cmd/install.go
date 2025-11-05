@@ -16,7 +16,9 @@ var installCmd = &cobra.Command{
 	},
 	Short: "Install dependencies from package.json",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return install.Run(cmd.Context(), meta.Pwd(), utils.Must(cmd.Flags().GetBool("ignore-scripts")))
+		ctx := cmd.Context()
+		install.Run(ctx, meta.Pwd(), utils.Must(cmd.Flags().GetBool("ignore-scripts")), true)
+		return nil
 	},
 }
 

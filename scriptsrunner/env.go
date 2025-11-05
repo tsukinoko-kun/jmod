@@ -38,17 +38,18 @@ func getDefaultEnv() []string {
 		return defaultEnv
 	}
 
-	defaultEnv = []string{
-		"npm_config_prefix=",
+	defaultEnv = append(
+		os.Environ(),
+		// "npm_config_prefix=",
 		"npm_config_global=false",
-		"npm_config_production=" + npmConfigProduction(),
-		"npm_config_save=" + npmConfigSafe(),
+		"npm_config_production="+npmConfigProduction(),
+		"npm_config_save="+npmConfigSafe(),
 		"npm_config_registry=https://registry.npmjs.org/",
 		"NODE_ENV=production",
-		"NODE_VERSION=" + nodeVersion(),
-		"npm_config_arch=" + arch,
-		"npm_config_platform=" + runtime.GOOS,
-		"npm_config_tmp=" + os.TempDir(),
-	}
+		"NODE_VERSION="+nodeVersion(),
+		"npm_config_arch="+arch,
+		"npm_config_platform="+runtime.GOOS,
+		"npm_config_tmp="+os.TempDir(),
+	)
 	return defaultEnv
 }

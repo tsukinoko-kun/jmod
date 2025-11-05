@@ -1,6 +1,9 @@
 package meta
 
-import "os"
+import (
+	"context"
+	"os"
+)
 
 var Version uint = 1
 
@@ -17,3 +20,5 @@ func Pwd() string {
 	}
 	return pwd
 }
+
+var CancelCause context.CancelCauseFunc
