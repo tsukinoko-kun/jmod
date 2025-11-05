@@ -13,12 +13,6 @@ import (
 )
 
 func main() {
-	if err := statusui.Start(); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		return
-	}
-	defer statusui.Stop()
-
 	ctx, cancel := context.WithCancelCause(context.Background())
 	meta.CancelCause = cancel
 	defer cancel(nil)

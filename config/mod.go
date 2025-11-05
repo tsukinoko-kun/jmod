@@ -218,11 +218,15 @@ depLoop:
 				}
 				return
 			} else if strings.HasPrefix(version, "git:") {
-				fmt.Println("TODO git", version)
+				logger.Printf("TODO git %s", version)
 				// TODO
 				return
 			} else if strings.HasPrefix(version, "github:") {
-				fmt.Println("TODO github", version)
+				logger.Printf("TODO github %s", version)
+				// TODO
+				return
+			} else if pck, ok := strings.CutPrefix(version, "jsr:"); ok {
+				logger.Printf("TODO jsr %s", pck)
 				// TODO
 				return
 			} else if alias, ok := strings.CutPrefix(version, "npm:"); ok {

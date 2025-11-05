@@ -9,6 +9,7 @@ import (
 	"github.com/tsukinoko-kun/jmod/logger"
 	"github.com/tsukinoko-kun/jmod/meta"
 	"github.com/tsukinoko-kun/jmod/registry"
+	"github.com/tsukinoko-kun/jmod/statusui"
 	"github.com/tsukinoko-kun/jmod/utils"
 )
 
@@ -16,6 +17,11 @@ var addCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Add a new dependency",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := statusui.Start(); err != nil {
+			return err
+		}
+		defer statusui.Stop()
+
 		// min 1 positional arg
 		if len(args) < 1 {
 			return cmd.Help()
