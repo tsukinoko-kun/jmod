@@ -15,7 +15,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -633,17 +635,50 @@ func extractTarXz(archivePath, destDir string) error {
 }
 
 func extractTarStream(r io.Reader, destDir string) error {
-	tr := tar.NewReader(r)
+	tmp, err := os.CreateTemp("", "jmod-tar-*.tar")
+	if err != nil {
+		return fmt.Errorf("create temp tar: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		tmp.Close()
+		os.Remove(tmpPath)
+	}()
 
-	absDest, err := filepath.Abs(destDir)
+	if _, err := io.Copy(tmp, r); err != nil {
+		return fmt.Errorf("buffer tar: %w", err)
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind tar: %w", err)
+	}
+
+	return extractTarReadSeeker(tmp, destDir)
+}
+
+func extractTarReadSeeker(rs io.ReadSeeker, destDir string) error {
+	rootDir, err := determineTarRoot(rs)
+	if err != nil {
+		return err
+	}
+	if _, err := rs.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind tar: %w", err)
+	}
+
+	absDest, err := filepath.Abs(filepath.Join(destDir, "package"))
 	if err != nil {
 		return fmt.Errorf("abs dest: %w", err)
 	}
+	if err := os.MkdirAll(absDest, 0o755); err != nil {
+		return fmt.Errorf("mkdir dest: %w", err)
+	}
+
+	tr := tar.NewReader(rs)
+	var extractedPkgJSON bool
 
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			break
 		}
 		if err != nil {
 			return fmt.Errorf("tar read: %w", err)
@@ -652,7 +687,27 @@ func extractTarStream(r io.Reader, destDir string) error {
 			continue
 		}
 
-		target, err := secureJoin(absDest, hdr.Name)
+		if isMetadataHeader(hdr.Typeflag) {
+			continue
+		}
+
+		normName, err := normalizeTarPath(hdr.Name)
+		if err != nil {
+			return fmt.Errorf("tar entry %q: %w", hdr.Name, err)
+		}
+		if normName == "" {
+			continue
+		}
+
+		trimmed, ok := trimTarPath(normName, rootDir)
+		if !ok {
+			continue
+		}
+		if trimmed == "" {
+			continue
+		}
+
+		target, err := secureJoin(absDest, trimmed)
 		if err != nil {
 			return fmt.Errorf("path check %q: %w", hdr.Name, err)
 		}
@@ -661,13 +716,9 @@ func extractTarStream(r io.Reader, destDir string) error {
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			// Ensure directories have write permission for the owner so files can be created inside them.
-			// Tar archives may have directories with restrictive permissions (e.g., 0500) which
-			// would prevent creating files inside them during extraction.
 			dirPerm := fi.Mode().Perm()
 			if dirPerm&0o200 == 0 {
-				// If write permission is missing for owner, add it
-				dirPerm = dirPerm | 0o200
+				dirPerm |= 0o200
 			}
 			if err := os.MkdirAll(target, dirPerm); err != nil {
 				return fmt.Errorf("mkdir: %w", err)
@@ -677,11 +728,7 @@ func extractTarStream(r io.Reader, destDir string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return fmt.Errorf("mkparent: %w", err)
 			}
-			out, err := os.OpenFile(
-				target,
-				os.O_CREATE|os.O_WRONLY|os.O_TRUNC,
-				fi.Mode().Perm(),
-			)
+			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, fi.Mode().Perm())
 			if err != nil {
 				return fmt.Errorf("create file: %w", err)
 			}
@@ -692,42 +739,207 @@ func extractTarStream(r io.Reader, destDir string) error {
 			if err := out.Close(); err != nil {
 				return fmt.Errorf("close file: %w", err)
 			}
+			if trimmed == "package.json" {
+				extractedPkgJSON = true
+			}
 
 		case tar.TypeSymlink:
-			// Only allow relative symlink targets.
 			if filepath.IsAbs(hdr.Linkname) {
-				return fmt.Errorf("absolute symlink rejected: %s",
-					hdr.Linkname)
+				return fmt.Errorf("absolute symlink rejected: %s", hdr.Linkname)
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return fmt.Errorf("mkparent: %w", err)
 			}
-			// Remove any existing path before creating the symlink.
 			_ = os.Remove(target)
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return fmt.Errorf("symlink: %w", err)
 			}
 
 		case tar.TypeLink:
-			// Hardlink within the archive; ensure it resolves inside dest.
-			linkTarget, err := secureJoin(absDest, hdr.Linkname)
+			linkName, err := normalizeTarPath(hdr.Linkname)
+			if err != nil {
+				return fmt.Errorf("hardlink linkname %q: %w", hdr.Linkname, err)
+			}
+			linkTrimmed, ok := trimTarPath(linkName, rootDir)
+			if !ok || linkTrimmed == "" {
+				return fmt.Errorf("hardlink target outside package root: %s", hdr.Linkname)
+			}
+			linkTarget, err := secureJoin(absDest, linkTrimmed)
 			if err != nil {
 				return fmt.Errorf("hardlink target: %w", err)
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return fmt.Errorf("mkparent: %w", err)
 			}
-			// Remove any existing path before linking.
 			_ = os.Remove(target)
 			if err := os.Link(linkTarget, target); err != nil {
 				return fmt.Errorf("hardlink: %w", err)
 			}
 
 		default:
-			// Skip other types (pax headers, char/dev, etc.)
 			continue
 		}
 	}
+
+	if !extractedPkgJSON {
+		return errors.New("package.json not found in archive")
+	}
+
+	return nil
+}
+
+func determineTarRoot(rs io.ReadSeeker) (string, error) {
+	if _, err := rs.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("rewind tar: %w", err)
+	}
+	tr := tar.NewReader(rs)
+
+	topComponents := map[string]int{}
+	var pkgJSONPaths []string
+
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("tar read: %w", err)
+		}
+		if hdr == nil || hdr.Name == "" {
+			continue
+		}
+		if isMetadataHeader(hdr.Typeflag) {
+			continue
+		}
+
+		normName, err := normalizeTarPath(hdr.Name)
+		if err != nil {
+			return "", fmt.Errorf("tar entry %q: %w", hdr.Name, err)
+		}
+		if normName == "" {
+			continue
+		}
+
+		comp := firstPathComponent(normName)
+		if comp != "" {
+			topComponents[comp]++
+		}
+
+		if path.Base(normName) == "package.json" {
+			pkgJSONPaths = append(pkgJSONPaths, normName)
+		}
+	}
+
+	if len(pkgJSONPaths) > 0 {
+		sort.Slice(pkgJSONPaths, func(i, j int) bool {
+			return depth(pkgJSONPaths[i]) < depth(pkgJSONPaths[j])
+		})
+		dir := path.Dir(pkgJSONPaths[0])
+		if dir == "." {
+			return "", nil
+		}
+		return dir, nil
+	}
+
+	if len(topComponents) == 1 {
+		var prefix string
+		for k := range topComponents {
+			prefix = k
+		}
+		if _, err := rs.Seek(0, io.SeekStart); err != nil {
+			return "", fmt.Errorf("rewind tar: %w", err)
+		}
+		tr = tar.NewReader(rs)
+		prefixSlash := prefix + "/"
+		for {
+			hdr, err := tr.Next()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				return "", fmt.Errorf("tar read: %w", err)
+			}
+			if hdr == nil || hdr.Name == "" {
+				continue
+			}
+			if isMetadataHeader(hdr.Typeflag) {
+				continue
+			}
+			normName, err := normalizeTarPath(hdr.Name)
+			if err != nil {
+				return "", fmt.Errorf("tar entry %q: %w", hdr.Name, err)
+			}
+			if normName == "" {
+				continue
+			}
+			if strings.HasPrefix(normName, prefixSlash) && strings.TrimPrefix(normName, prefixSlash) == "package.json" {
+				return prefix, nil
+			}
+		}
+	}
+
+	return "", errors.New("package.json not found in archive")
+}
+
+func normalizeTarPath(name string) (string, error) {
+	cleaned := strings.ReplaceAll(name, "\\", "/")
+	cleaned = strings.TrimSpace(cleaned)
+	cleaned = path.Clean(cleaned)
+	cleaned = strings.TrimPrefix(cleaned, "./")
+
+	if cleaned == "." {
+		return "", nil
+	}
+	if strings.HasPrefix(cleaned, "../") || cleaned == ".." {
+		return "", fmt.Errorf("path escapes root: %q", name)
+	}
+	if strings.HasPrefix(cleaned, "/") {
+		return "", fmt.Errorf("absolute path in archive: %q", name)
+	}
+
+	return cleaned, nil
+}
+
+func trimTarPath(normalized, root string) (string, bool) {
+	if root == "" {
+		return normalized, true
+	}
+	if normalized == root {
+		return "", true
+	}
+	prefix := root + "/"
+	if strings.HasPrefix(normalized, prefix) {
+		return strings.TrimPrefix(normalized, prefix), true
+	}
+	return "", false
+}
+
+func firstPathComponent(p string) string {
+	if p == "" {
+		return ""
+	}
+	if idx := strings.IndexByte(p, '/'); idx >= 0 {
+		return p[:idx]
+	}
+	return p
+}
+
+func depth(p string) int {
+	if p == "" {
+		return 0
+	}
+	return strings.Count(p, "/") + 1
+}
+
+func isMetadataHeader(t byte) bool {
+	switch t {
+	case tar.TypeXHeader,
+		tar.TypeXGlobalHeader,
+		tar.TypeGNULongName,
+		tar.TypeGNULongLink:
+		return true
+	}
+	return false
 }
 
 func secureJoin(base, name string) (string, error) {
