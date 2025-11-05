@@ -18,10 +18,10 @@ var listCmd = &cobra.Command{
 				fmt.Println()
 			}
 			fmt.Println("module:", mod.TypedData.GetFileLocation())
-			for dep, version := range mod.TypedData.NpmAutoDependencies {
+			for dep, version := range mod.TypedData.NpmDependencies {
 				fmt.Printf("  %s@%s\n", dep, version)
 			}
-			for dep, version := range mod.TypedData.NpmManualDependencies {
+			for dep, version := range mod.TypedData.NpmDevDependencies {
 				fmt.Printf("  %s@%s\n", dep, version)
 			}
 		}

@@ -112,8 +112,8 @@ func Run(root string) error {
 
 		logger.Printf("found %d imports for %s", len(modImports), utils.Must(filepath.Rel(meta.Pwd(), mod.GetFileLocation())))
 
-		if mod.NpmAutoDependencies == nil {
-			mod.NpmAutoDependencies = make(map[string]string)
+		if mod.NpmDependencies == nil {
+			mod.NpmDependencies = make(map[string]string)
 		}
 
 		for imp := range modImports {
@@ -122,16 +122,16 @@ func Run(root string) error {
 			}
 
 			// check if the package is already a dependency
-			if _, included := mod.NpmManualDependencies[imp]; included {
+			if _, included := mod.NpmDevDependencies[imp]; included {
 				continue
 			}
-			if _, included := mod.NpmAutoDependencies[imp]; !included {
+			if _, included := mod.NpmDependencies[imp]; !included {
 				latestVersion, err := registry.Npm_GetLatestVersion(imp)
 				if err != nil {
 					logger.Printf("failed to get latest version for %s: %s", imp, err)
 					continue
 				}
-				mod.NpmAutoDependencies[imp] = latestVersion
+				mod.NpmDependencies[imp] = latestVersion
 				logger.Printf("  new package %s (version %s)", imp, latestVersion)
 			}
 		}

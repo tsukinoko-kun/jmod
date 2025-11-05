@@ -15,7 +15,7 @@ import (
 	"github.com/tsukinoko-kun/jmod/statusui"
 )
 
-func Run(ctx context.Context, root string, ignoreScripts bool, dev bool) {
+func Run(ctx context.Context, root string, ignoreScripts bool, dev bool, optional bool) {
 	mods := config.FindSubMods(root)
 
 	wg := sync.WaitGroup{}
@@ -33,7 +33,11 @@ modsLoop:
 
 			if !ignoreScripts {
 				if err := lifecyclePreinstall(mod.GetFileLocation()); err != nil {
-					meta.CancelCause(err)
+					if optional {
+						logger.Printf("failed to run lifecycle preinstall for %s: %s", mod.GetFileLocation(), err)
+					} else {
+						meta.CancelCause(err)
+					}
 					return
 				}
 			}
@@ -42,27 +46,39 @@ modsLoop:
 			nodeModulesDir := filepath.Join(modRoot, "node_modules")
 			binDir := filepath.Join(nodeModulesDir, ".bin")
 
-			for dependency := range mod.ResolveDependenciesDeep(ctx, dev) {
+			for dependency := range mod.ResolveDependenciesDeep(ctx, dev, optional) {
 				if err := link(dependency.CachedLocation, filepath.Join(nodeModulesDir, dependency.PackageName)); err != nil {
-					meta.CancelCause(fmt.Errorf("failed to link %s: %w", dependency.PackageName, err))
+					if optional {
+						logger.Printf("failed to link %s: %s", dependency.PackageName, err)
+					} else {
+						meta.CancelCause(fmt.Errorf("failed to link %s: %w", dependency.PackageName, err))
+					}
 					return
 				}
 				// recursive install
-				Run(ctx, dependency.CachedLocation, ignoreScripts, false)
+				Run(ctx, dependency.CachedLocation, ignoreScripts, false, optional)
 				select {
 				case <-ctx.Done():
 					return
 				default:
 				}
 				// setup executables
-				if bins, err := config.ResolveBins(ctx, dependency.CachedLocation); err != nil {
-					meta.CancelCause(fmt.Errorf("failed to resolve bins for %s: %w", mod.GetFileLocation(), err))
+				if bins, err := config.ResolveBins(ctx, mod.GetFileLocation()); err != nil {
+					if optional {
+						logger.Printf("failed to resolve bins for %s: %s", mod.GetFileLocation(), err)
+					} else {
+						meta.CancelCause(fmt.Errorf("failed to resolve bins for %s: %w", mod.GetFileLocation(), err))
+					}
 					return
 				} else {
 					for _, bin := range bins {
 						logger.Printf("linking %s -> %s", filepath.Join(binDir, bin.BinName), bin.BinPath)
 						if err := link(bin.BinPath, filepath.Join(binDir, bin.BinName)); err != nil {
-							meta.CancelCause(fmt.Errorf("failed to link %s: %w", bin.BinName, err))
+							if optional {
+								logger.Printf("failed to link %s: %s", bin.BinName, err)
+							} else {
+								meta.CancelCause(fmt.Errorf("failed to link %s: %w", bin.BinName, err))
+							}
 							return
 						}
 					}
@@ -71,7 +87,11 @@ modsLoop:
 
 			if !ignoreScripts {
 				if err := lifecyclePostinstall(mod.GetFileLocation()); err != nil {
-					meta.CancelCause(err)
+					if optional {
+						logger.Printf("failed to run lifecycle postinstall for %s: %s", mod.GetFileLocation(), err)
+					} else {
+						meta.CancelCause(err)
+					}
 					return
 				}
 			}

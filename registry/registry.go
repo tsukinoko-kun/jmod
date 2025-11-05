@@ -9,6 +9,7 @@ type Package struct {
 	PackageName string
 	Version     string
 	Source      string
+	Optional    bool
 }
 
 func (p Package) String() string {

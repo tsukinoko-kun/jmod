@@ -255,10 +255,9 @@ func CachePut(ctx context.Context, registry string, r Resolveable) (string, erro
 	go func(ctx context.Context, key string) {
 		select {
 		case <-time.After(100 * time.Millisecond):
-			statusui.Clear(key)
 		case <-ctx.Done():
-			// Context canceled, do not clear status
 		}
+		statusui.Clear(key)
 	}(ctx, statusKey)
 
 	return filepath.Join(packageLocation, "package"), nil
