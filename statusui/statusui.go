@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/tsukinoko-kun/disize"
 )
 
 // Global state
@@ -283,7 +284,7 @@ func (pw *ProgressWriter) Write(p []byte) (int, error) {
 	pw.current += int64(n)
 
 	// Update status every 100KB or at completion
-	shouldUpdate := pw.current-pw.lastPrint >= 100*1024 || pw.current == pw.total
+	shouldUpdate := pw.current-pw.lastPrint >= 100*disize.Kib || pw.current == pw.total
 	if shouldUpdate {
 		pw.lastPrint = pw.current
 		Set(pw.key, ProgressStatus{

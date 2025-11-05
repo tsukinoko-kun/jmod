@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/tsukinoko-kun/disize"
 	"github.com/tsukinoko-kun/jmod/statusui"
 	"github.com/ulikunitz/xz"
 )
@@ -398,7 +399,7 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	pr.mu.Lock()
 	pr.current += int64(n)
 	// Update status every 100KB or at completion
-	shouldUpdate := pr.current-pr.lastPrint >= 100*1024 || pr.current == pr.total || err == io.EOF
+	shouldUpdate := pr.current-pr.lastPrint >= 100*disize.Kib || pr.current == pr.total || err == io.EOF
 	if shouldUpdate {
 		pr.lastPrint = pr.current
 		// Copy values for use outside the lock

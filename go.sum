@@ -100,6 +100,8 @@ github.com/tree-sitter/tree-sitter-rust v0.23.2 h1:6AtoooCW5GqNrRpfnvl0iUhxTAZEo
 github.com/tree-sitter/tree-sitter-rust v0.23.2/go.mod h1:hfeGWic9BAfgTrc7Xf6FaOAguCFJRo3RBbs7QJ6D7MI=
 github.com/tree-sitter/tree-sitter-typescript v0.23.2 h1:/Odvphn18PniVixb9e97X0DbNVsU6Qocv9mfkyzdXwU=
 github.com/tree-sitter/tree-sitter-typescript v0.23.2/go.mod h1:zjzMXT/Ulffel2xfOcAkQQkiAkmgnbtPGlFQw/5X4xA=
+github.com/tsukinoko-kun/disize v0.1.0 h1:2yEWwuoWTw0cbFff91OCzb931Kr6rmG8viCBA0v15dk=
+github.com/tsukinoko-kun/disize v0.1.0/go.mod h1:MQaH8y9YCnQTuBrrzPg8WNS1uuBW5brS2B+gF4XtPAY=
 github.com/tsukinoko-kun/jsonedit v0.1.1 h1:BDwJFwBsDoJ9CtWjOcFJpDZ3HVwAxJ3+6c8QcoQoGY4=
 github.com/tsukinoko-kun/jsonedit v0.1.1/go.mod h1:DhXFsAoh56WC7UXqTzq/OjD51gr7AxLGG6oGkS0dEYo=
 github.com/tsukinoko-kun/jsonedit v0.1.2 h1:vaIMtydQdfGSqKAVtj8waLJNzyHewXQvAqUciVZ6XOo=

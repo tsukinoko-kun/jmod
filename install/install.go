@@ -125,6 +125,8 @@ func runLifecycleScript(packageJsonPath, scriptName string) error {
 	})
 	go func() {
 		time.Sleep(100 * time.Millisecond)
+		// program might exit before this sleep is complete
+		// does not matter
 		statusui.Clear(statusKey)
 	}()
 

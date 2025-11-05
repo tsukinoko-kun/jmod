@@ -44,7 +44,6 @@ func runShell(root, script string, args []string, env []string) error {
 	// Capture output and log errors
 	out, err := cmd.CombinedOutput()
 	if err != nil && len(out) > 0 {
-		// Import added at top of file
 		return fmt.Errorf("%s: %w", string(out), err)
 	}
 	if len(out) > 0 {
