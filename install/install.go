@@ -1,24 +1,22 @@
 package install
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/tsukinoko-kun/jmod/config"
+	"github.com/tsukinoko-kun/jmod/logger"
+	"github.com/tsukinoko-kun/jmod/meta"
 	"github.com/tsukinoko-kun/jmod/scriptsrunner"
+	"github.com/tsukinoko-kun/jmod/statusui"
 )
 
-func Run(ctx context.Context, root string, ignoreScripts bool) error {
+func Run(ctx context.Context, root string, ignoreScripts bool, dev bool) {
 	mods := config.FindSubMods(root)
-
-	var errs []error
-	errsMut := sync.Mutex{}
 
 	wg := sync.WaitGroup{}
 
@@ -29,140 +27,108 @@ modsLoop:
 			break modsLoop
 		default:
 		}
+
 		wg.Go(func() {
 			mod := modDoc.TypedData
+
+			if !ignoreScripts {
+				if err := lifecyclePreinstall(mod.GetFileLocation()); err != nil {
+					meta.CancelCause(err)
+					return
+				}
+			}
+
 			modRoot := filepath.Dir(mod.GetFileLocation())
 			nodeModulesDir := filepath.Join(modRoot, "node_modules")
-			_ = nodeModulesDir
+			binDir := filepath.Join(nodeModulesDir, ".bin")
 
-			for dependency := range mod.ResolveDependenciesDeep(ctx) {
+			for dependency := range mod.ResolveDependenciesDeep(ctx, dev) {
 				if err := link(dependency.CachedLocation, filepath.Join(nodeModulesDir, dependency.PackageName)); err != nil {
-					errsMut.Lock()
-					errs = append(errs, err)
-					errsMut.Unlock()
+					meta.CancelCause(fmt.Errorf("failed to link %s: %w", dependency.PackageName, err))
 					return
 				}
 				// recursive install
-				if err := Run(ctx, dependency.CachedLocation, ignoreScripts); err != nil {
-					errsMut.Lock()
-					errs = append(errs, err)
-					errsMut.Unlock()
+				Run(ctx, dependency.CachedLocation, ignoreScripts, false)
+				select {
+				case <-ctx.Done():
 					return
+				default:
 				}
 				// setup executables
-				if err := setupBin(dependency.CachedLocation); err != nil {
-					errsMut.Lock()
-					errs = append(errs, err)
-					errsMut.Unlock()
+				if bins, err := config.ResolveBins(ctx, dependency.CachedLocation); err != nil {
+					meta.CancelCause(fmt.Errorf("failed to resolve bins for %s: %w", mod.GetFileLocation(), err))
 					return
-				}
-				// install lifecycle
-				if !ignoreScripts {
-					if err := installLifecycle(dependency.CachedLocation); err != nil {
-						errsMut.Lock()
-						errs = append(errs, err)
-						errsMut.Unlock()
-						return
+				} else {
+					for _, bin := range bins {
+						logger.Printf("linking %s -> %s", filepath.Join(binDir, bin.BinName), bin.BinPath)
+						if err := link(bin.BinPath, filepath.Join(binDir, bin.BinName)); err != nil {
+							meta.CancelCause(fmt.Errorf("failed to link %s: %w", bin.BinName, err))
+							return
+						}
 					}
+				}
+			}
+
+			if !ignoreScripts {
+				if err := lifecyclePostinstall(mod.GetFileLocation()); err != nil {
+					meta.CancelCause(err)
+					return
 				}
 			}
 		})
 	}
 
 	wg.Wait()
-
-	return errors.Join(errs...)
 }
 
-type packageJson struct {
-	Name *string           `json:"name"`
-	Bin  map[string]string `json:"bin"`
+func lifecyclePreinstall(packageJsonPath string) error {
+	return runLifecycleScript(packageJsonPath, "preinstall")
 }
 
-func (p *packageJson) UnmarshalJSON(data []byte) error {
-	// intermediate type to capture raw bin bytes
-	type rawPkg struct {
-		Name *string         `json:"name"`
-		Bin  json.RawMessage `json:"bin"`
-	}
-
-	var r rawPkg
-	if err := json.Unmarshal(data, &r); err != nil {
+func lifecyclePostinstall(packageJsonPath string) error {
+	if err := runLifecycleScript(packageJsonPath, "install"); err != nil {
 		return err
 	}
-
-	p.Name = r.Name
-
-	// no bin field or explicit null -> leave as nil
-	if len(r.Bin) == 0 || bytes.Equal(bytes.TrimSpace(r.Bin), []byte("null")) {
-		p.Bin = nil
-		return nil
-	}
-
-	// Try to unmarshal as map[string]string first
-	var m map[string]string
-	if err := json.Unmarshal(r.Bin, &m); err == nil {
-		p.Bin = m
-		return nil
-	}
-
-	// Otherwise try as single string
-	var s string
-	if err := json.Unmarshal(r.Bin, &s); err == nil {
-		if p.Name == nil {
-			return fmt.Errorf("bin is a string but package name is missing")
-		}
-		p.Bin = map[string]string{*p.Name: s}
-		return nil
-	}
-
-	return fmt.Errorf("bin field has an unexpected JSON type")
+	return runLifecycleScript(packageJsonPath, "postinstall")
 }
 
-func getPackageJson(root string) (packageJson, error) {
-	packageJsonPath := filepath.Join(root, "package.json")
-	f, err := os.Open(packageJsonPath)
-	defer f.Close()
-	if err != nil {
-		return packageJson{}, err
-	}
-	var pj packageJson
-	jd := json.NewDecoder(f)
-	err = jd.Decode(&pj)
-	if err != nil {
-		return packageJson{}, fmt.Errorf("decode %s: %w", packageJsonPath, err)
-	}
-	return pj, nil
-}
-
-func setupBin(root string) error {
-	pj, err := getPackageJson(root)
-	if err != nil {
-		return err
+func runLifecycleScript(packageJsonPath, scriptName string) error {
+	// Get package name for status key
+	pj, err := config.GetPackageJsonForLifecycle(packageJsonPath)
+	statusKey := packageJsonPath
+	if err == nil && pj.Name != nil {
+		statusKey = fmt.Sprintf("script:%s", pj.Identifier())
 	}
 
-	for binName, binRelativePath := range pj.Bin {
-		binAbsolutePath := filepath.Join(root, binRelativePath)
-		if _, err := os.Stat(binAbsolutePath); err != nil {
-			return fmt.Errorf("stat %s for bin %s in mod %s: %w", binAbsolutePath, binName, root, err)
-		}
-		if err := os.Chmod(binAbsolutePath, 0o755); err != nil {
-			return err
-		}
-		if err := link(binAbsolutePath, filepath.Join(root, "node_modules", ".bin", binName)); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func installLifecycle(root string) error {
-	scriptsrunner.Run(root, "preinstall", nil, map[string]string{
-		"npm_lifecycle_event": "preinstall",
-		"npm_config_target":   root,
-		"npm_config_modules":  root,
+	statusui.Set(statusKey, statusui.TextStatus{
+		Text: fmt.Sprintf("🔧 Running %s script for %s", scriptName, pj.Identifier()),
 	})
+
+	if err := scriptsrunner.Run(packageJsonPath, scriptName, nil, "install"); err != nil {
+		if errors.Is(err, scriptsrunner.ErrScriptNotFound) {
+			// Clear status if script not found (not an error)
+			statusui.Clear(statusKey)
+			return nil
+		}
+		if pj.Name != nil {
+			if pj.Version != nil {
+				return fmt.Errorf("failed to run %s script for %s@%s: %w", scriptName, *pj.Name, *pj.Version, err)
+			}
+			return fmt.Errorf("failed to run %s script for %s: %w", scriptName, *pj.Name, err)
+		}
+		return fmt.Errorf("failed to run %s script: %w", scriptName, err)
+	}
+
+	// Success - clear after a moment
+	statusui.Set(statusKey, statusui.SuccessStatus{
+		Message: fmt.Sprintf("Completed %s script", scriptName),
+	})
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		// program might exit before this sleep is complete
+		// does not matter
+		statusui.Clear(statusKey)
+	}()
 
 	return nil
 }

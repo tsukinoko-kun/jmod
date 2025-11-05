@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+
+	"github.com/tsukinoko-kun/jmod/logger"
 )
 
 type shellRunner func(root, script string, args []string, env []string) error
@@ -26,9 +28,16 @@ func pickRunner() (shellRunner, error) {
 			cmd := exec.Command(p, argv...)
 			cmd.Dir = root
 			cmd.Env = env
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
+
+			// Capture output and log errors
+			out, err := cmd.CombinedOutput()
+			if len(out) > 0 {
+				if err != nil {
+					return fmt.Errorf("%s: %w", string(out), err)
+				}
+				logger.Printf("%s $ %s\n%s", root, script, string(out))
+			}
+			return err
 		}, nil
 	}
 
@@ -46,9 +55,16 @@ func pickRunner() (shellRunner, error) {
 			cmd := exec.Command(p, argv...)
 			cmd.Dir = root
 			cmd.Env = env
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
+
+			// Capture output and log errors
+			out, err := cmd.CombinedOutput()
+			if len(out) > 0 {
+				if err != nil {
+					return fmt.Errorf("%s: %w", string(out), err)
+				}
+				logger.Printf("%s $ %s\n%s", root, script, string(out))
+			}
+			return err
 		}, nil
 	}
 
@@ -75,9 +91,16 @@ func pickRunner() (shellRunner, error) {
 			cmd := exec.Command(p, argv...)
 			cmd.Dir = root
 			cmd.Env = env
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
+
+			// Capture output and log errors
+			out, err := cmd.CombinedOutput()
+			if len(out) > 0 {
+				if err != nil {
+					return fmt.Errorf("%s: %w", string(out), err)
+				}
+				logger.Printf("%s $ %s\n%s", root, script, string(out))
+			}
+			return err
 		}, nil
 	}
 

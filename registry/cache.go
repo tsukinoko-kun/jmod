@@ -21,10 +21,13 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/tsukinoko-kun/disize"
+	"github.com/tsukinoko-kun/jmod/statusui"
 	"github.com/ulikunitz/xz"
 )
 
 var cacheLocation string
+var tarballCacheLocation string
 
 var (
 	cacheLocks = map[string]*sync.Mutex{}
@@ -65,6 +68,38 @@ func getCacheLocation() string {
 	return cacheLocation
 }
 
+// GetTarballCacheLocation returns the directory where NPM tarballs are cached.
+// For testing, you can override this by setting the JMOD_TARBALL_CACHE environment variable.
+// To clear the cache during testing, simply delete this directory.
+func GetTarballCacheLocation() string {
+	return getTarballCacheLocation()
+}
+
+func getTarballCacheLocation() string {
+	if tarballCacheLocation != "" {
+		return tarballCacheLocation
+	}
+
+	// Check for environment variable override (useful for testing)
+	if envCache := os.Getenv("JMOD_TARBALL_CACHE"); envCache != "" {
+		tarballCacheLocation = envCache
+		if err := os.MkdirAll(tarballCacheLocation, 0755); err != nil {
+			panic(err)
+		}
+		return tarballCacheLocation
+	}
+
+	userCacheDir, err := os.UserCacheDir()
+	if err != nil {
+		panic(err)
+	}
+	tarballCacheLocation = filepath.Join(userCacheDir, "jmod-tarballs")
+	if err := os.MkdirAll(tarballCacheLocation, 0755); err != nil {
+		panic(err)
+	}
+	return tarballCacheLocation
+}
+
 func CacheHas(registry string, packageName string, versionConstrains *semver.Constraints) (bool, string) {
 	if versionConstrains == nil {
 		return false, ""
@@ -97,14 +132,21 @@ func CachePut(ctx context.Context, registry string, r Resolveable) (string, erro
 		r.GetVersion(),
 	)
 
+	statusKey := fmt.Sprintf("%s:%s@%s", registry, r.GetName(), r.GetVersion())
+
 	// Check if the package is already cached
 	if _, err := os.Stat(packageLocation); err == nil {
+		// Package is already cached, no need to download/install again
 		return filepath.Join(packageLocation, "package"), nil
 	}
 
 	// Prepare parent directory for temp artifacts and final extraction.
 	parent := filepath.Dir(packageLocation)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
+		statusui.Set(statusKey, statusui.ErrorStatus{
+			Message: fmt.Sprintf("Failed to prepare %s@%s", r.GetName(), r.GetVersion()),
+			Err:     err,
+		})
 		return "", fmt.Errorf("mkdir parent: %w", err)
 	}
 
@@ -117,11 +159,24 @@ func CachePut(ctx context.Context, registry string, r Resolveable) (string, erro
 		r.GetSource(),
 		parent,
 		r.GetChecksumFormat(),
+		statusKey,
+		r.GetName(),
+		r.GetVersion(),
 	)
 	if err != nil {
+		// Check if error is due to context cancellation
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// Silently clear the status on cancellation
+			statusui.Clear(statusKey)
+		} else {
+			statusui.Set(statusKey, statusui.ErrorStatus{
+				Message: fmt.Sprintf("Failed to download %s@%s", r.GetName(), r.GetVersion()),
+				Err:     err,
+			})
+		}
 		return "", err
 	}
-	// Always remove the temporary archive after we’re done with it.
+	// Always remove the temporary archive after we're done with it.
 	defer os.Remove(tmpArchive)
 
 	// Normalize/parse expected checksum and compare.
@@ -130,32 +185,81 @@ func CachePut(ctx context.Context, registry string, r Resolveable) (string, erro
 		r.GetChecksumFormat(),
 	)
 	if err != nil {
+		statusui.Set(statusKey, statusui.ErrorStatus{
+			Message: fmt.Sprintf("Failed to verify checksum for %s@%s", r.GetName(), r.GetVersion()),
+			Err:     err,
+		})
 		return "", err
 	}
 	if subtle.ConstantTimeCompare(expSum, gotSum) != 1 {
-		return "", fmt.Errorf("checksum mismatch for %s %s",
-			r.GetName(), r.GetVersion())
+		err := fmt.Errorf("checksum mismatch for %s %s", r.GetName(), r.GetVersion())
+		statusui.Set(statusKey, statusui.ErrorStatus{
+			Message: fmt.Sprintf("Checksum mismatch for %s@%s", r.GetName(), r.GetVersion()),
+			Err:     err,
+		})
+		return "", err
 	}
 
 	// Extract to a staging dir, then atomically rename into place.
+	statusui.Set(statusKey, statusui.TextStatus{
+		Text: fmt.Sprintf("📦 Extracting %s@%s", r.GetName(), r.GetVersion()),
+	})
+
 	staging, err := os.MkdirTemp(parent, ".extract-*")
 	if err != nil {
+		statusui.Set(statusKey, statusui.ErrorStatus{
+			Message: fmt.Sprintf("Failed to create staging dir for %s@%s", r.GetName(), r.GetVersion()),
+			Err:     err,
+		})
 		return "", fmt.Errorf("mktemp staging: %w", err)
 	}
 	// Clean up staging on error; on success we rename it and cleanup is moot.
 	defer os.RemoveAll(staging)
 
 	if err := extractArchive(tmpArchive, r.GetSourceFormat(), staging); err != nil {
+		// Check if error is due to context cancellation
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// Silently clear the status on cancellation
+			statusui.Clear(statusKey)
+		} else {
+			statusui.Set(statusKey, statusui.ErrorStatus{
+				Message: fmt.Sprintf("Failed to extract %s@%s", r.GetName(), r.GetVersion()),
+				Err:     err,
+			})
+		}
 		return "", err
 	}
 
 	// Replace existing destination atomically.
 	if err := os.RemoveAll(packageLocation); err != nil {
+		statusui.Set(statusKey, statusui.ErrorStatus{
+			Message: fmt.Sprintf("Failed to prepare installation for %s@%s", r.GetName(), r.GetVersion()),
+			Err:     err,
+		})
 		return "", fmt.Errorf("remove old dest: %w", err)
 	}
 	if err := os.Rename(staging, packageLocation); err != nil {
+		statusui.Set(statusKey, statusui.ErrorStatus{
+			Message: fmt.Sprintf("Failed to install %s@%s", r.GetName(), r.GetVersion()),
+			Err:     err,
+		})
 		return "", fmt.Errorf("rename staging: %w", err)
 	}
+
+	statusui.Set(statusKey, statusui.SuccessStatus{
+		Message: fmt.Sprintf("Installed %s@%s", r.GetName(), r.GetVersion()),
+	})
+
+	// Clear status after installation completes
+	// The batching system will handle this smoothly
+	go func(ctx context.Context, key string) {
+		select {
+		case <-time.After(100 * time.Millisecond):
+			statusui.Clear(key)
+		case <-ctx.Done():
+			// Context canceled, do not clear status
+		}
+	}(ctx, statusKey)
 
 	return filepath.Join(packageLocation, "package"), nil
 }
@@ -165,10 +269,43 @@ func downloadToTempWithChecksum(
 	url string,
 	destDir string,
 	cf ChecksumFormat,
+	statusKey string,
+	packageName string,
+	packageVersion string,
 ) (tmpPath string, sum []byte, err error) {
 	h, digestSize, err := hasherFor(cf)
 	if err != nil {
 		return "", nil, err
+	}
+
+	// Check tarball cache first
+	cachedTarball, cachedSum := getCachedTarball(url, cf)
+	if cachedTarball != "" {
+		// Verify checksum of cached tarball
+		statusui.Set(statusKey, statusui.TextStatus{
+			Text: fmt.Sprintf("📦 Using cached %s@%s", packageName, packageVersion),
+		})
+		f, err := os.Open(cachedTarball)
+		if err == nil {
+			defer f.Close()
+			h.Reset()
+			if _, err := io.Copy(h, f); err == nil {
+				gotSum := h.Sum(nil)
+				if len(gotSum) == digestSize && subtle.ConstantTimeCompare(cachedSum, gotSum) == 1 {
+					// Cache hit - copy to temp location for caller
+					tmpFile, err := os.CreateTemp(destDir, ".download-*.tmp")
+					if err == nil {
+						tmpPath = tmpFile.Name()
+						tmpFile.Close()
+						if err := copyFile(cachedTarball, tmpPath); err == nil {
+							return tmpPath, cachedSum, nil
+						}
+						os.Remove(tmpPath)
+					}
+				}
+			}
+		}
+		// If cache verification failed, continue to download
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -198,8 +335,31 @@ func downloadToTempWithChecksum(
 		f.Close()
 	}()
 
+	// Get content length for progress tracking
+	contentLength := resp.ContentLength
+
+	// Create a progress reader
+	var reader io.Reader = resp.Body
+	if contentLength > 0 {
+		statusui.Set(statusKey, statusui.ProgressStatus{
+			Label:   fmt.Sprintf("⬇️  Downloading %s@%s", packageName, packageVersion),
+			Current: 0,
+			Total:   contentLength,
+		})
+		reader = &progressReader{
+			reader:    resp.Body,
+			statusKey: statusKey,
+			label:     fmt.Sprintf("⬇️  Downloading %s@%s", packageName, packageVersion),
+			total:     contentLength,
+		}
+	} else {
+		statusui.Set(statusKey, statusui.TextStatus{
+			Text: fmt.Sprintf("⬇️  Downloading %s@%s", packageName, packageVersion),
+		})
+	}
+
 	// Stream copy into file and hasher simultaneously.
-	_, err = io.Copy(io.MultiWriter(f, h), resp.Body)
+	_, err = io.Copy(io.MultiWriter(f, h), reader)
 	if err != nil {
 		return "", nil, fmt.Errorf("copy: %w", err)
 	}
@@ -216,7 +376,164 @@ func downloadToTempWithChecksum(
 	if len(sum) != digestSize {
 		return "", nil, fmt.Errorf("unexpected digest size")
 	}
+
+	// Save to tarball cache for future use
+	saveTarballToCache(url, tmpPath, sum, cf)
+
 	return tmpPath, sum, nil
+}
+
+// progressReader wraps an io.Reader to track download progress
+type progressReader struct {
+	reader    io.Reader
+	statusKey string
+	label     string
+	total     int64
+	current   int64
+	lastPrint int64
+	mu        sync.Mutex
+}
+
+func (pr *progressReader) Read(p []byte) (int, error) {
+	n, err := pr.reader.Read(p)
+	pr.mu.Lock()
+	pr.current += int64(n)
+	// Update status every 100KB or at completion
+	shouldUpdate := pr.current-pr.lastPrint >= 100*disize.Kib || pr.current == pr.total || err == io.EOF
+	if shouldUpdate {
+		pr.lastPrint = pr.current
+		// Copy values for use outside the lock
+		current := pr.current
+		total := pr.total
+		label := pr.label
+		statusKey := pr.statusKey
+		pr.mu.Unlock()
+		statusui.Set(statusKey, statusui.ProgressStatus{
+			Label:   label,
+			Current: current,
+			Total:   total,
+		})
+	} else {
+		pr.mu.Unlock()
+	}
+
+	return n, err
+}
+
+func getCachedTarball(url string, cf ChecksumFormat) (string, []byte) {
+	tarballCacheDir := getTarballCacheLocation()
+
+	// Create a filename based on URL hash (to avoid path issues)
+	urlHash := fmt.Sprintf("%x", sha256.Sum256([]byte(url)))
+
+	// Try both checksum formats (since we might have cached with a different format)
+	for _, format := range []ChecksumFormat{cf, ChecksumFormatSha512, ChecksumFormatSha256} {
+		if format == ChecksumFormatUnknown {
+			continue
+		}
+
+		var ext string
+		switch format {
+		case ChecksumFormatSha256:
+			ext = ".sha256"
+		case ChecksumFormatSha512:
+			ext = ".sha512"
+		default:
+			continue
+		}
+
+		cacheFile := filepath.Join(tarballCacheDir, urlHash+ext+".tgz")
+
+		// Check if cached file exists
+		if _, err := os.Stat(cacheFile); err != nil {
+			continue
+		}
+
+		// Read checksum from companion file
+		checksumFile := cacheFile + ".checksum"
+		checksumData, err := os.ReadFile(checksumFile)
+		if err != nil {
+			continue
+		}
+
+		// Parse checksum based on stored format
+		sum, err := normalizeExpectedChecksum(checksumData, format)
+		if err != nil {
+			continue
+		}
+
+		// Verify the format matches what we expect
+		expSize := 0
+		switch cf {
+		case ChecksumFormatSha256:
+			expSize = sha256.Size
+		case ChecksumFormatSha512:
+			expSize = sha512.Size
+		default:
+			continue
+		}
+
+		if len(sum) != expSize {
+			continue
+		}
+
+		return cacheFile, sum
+	}
+
+	return "", nil
+}
+
+func saveTarballToCache(url string, tmpPath string, sum []byte, cf ChecksumFormat) {
+	if cf == ChecksumFormatUnknown {
+		return
+	}
+
+	tarballCacheDir := getTarballCacheLocation()
+
+	// Create a filename based on URL hash with checksum format extension
+	urlHash := fmt.Sprintf("%x", sha256.Sum256([]byte(url)))
+
+	var ext string
+	switch cf {
+	case ChecksumFormatSha256:
+		ext = ".sha256"
+	case ChecksumFormatSha512:
+		ext = ".sha512"
+	default:
+		return
+	}
+
+	cacheFile := filepath.Join(tarballCacheDir, urlHash+ext+".tgz")
+	checksumFile := cacheFile + ".checksum"
+
+	// Copy tarball to cache
+	if err := copyFile(tmpPath, cacheFile); err != nil {
+		return
+	}
+
+	// Save checksum
+	sumHex := hex.EncodeToString(sum)
+	if err := os.WriteFile(checksumFile, []byte(sumHex), 0644); err != nil {
+		os.Remove(cacheFile) // Clean up on error
+		return
+	}
+}
+
+func copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	return err
 }
 
 func hasherFor(cf ChecksumFormat) (h hash.Hash, size int, err error) {
@@ -345,7 +662,15 @@ func extractTarStream(r io.Reader, destDir string) error {
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, fi.Mode().Perm()); err != nil {
+			// Ensure directories have write permission for the owner so files can be created inside them.
+			// Tar archives may have directories with restrictive permissions (e.g., 0500) which
+			// would prevent creating files inside them during extraction.
+			dirPerm := fi.Mode().Perm()
+			if dirPerm&0o200 == 0 {
+				// If write permission is missing for owner, add it
+				dirPerm = dirPerm | 0o200
+			}
+			if err := os.MkdirAll(target, dirPerm); err != nil {
 				return fmt.Errorf("mkdir: %w", err)
 			}
 

@@ -14,7 +14,7 @@ var initCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		logger.Printf("jmod project initialized\n")
+		logger.Printf("jmod project initialized")
 		return nil
 	},
 }

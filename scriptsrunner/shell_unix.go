@@ -3,8 +3,11 @@
 package scriptsrunner
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+
+	"github.com/tsukinoko-kun/jmod/logger"
 )
 
 var defaultShell string
@@ -37,7 +40,16 @@ func runShell(root, script string, args []string, env []string) error {
 	cmd := exec.Command(sh, argv...)
 	cmd.Dir = root
 	cmd.Env = env
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+
+	// Capture output and log errors
+	out, err := cmd.CombinedOutput()
+	if err != nil && len(out) > 0 {
+		return fmt.Errorf("%s: %w", string(out), err)
+	}
+	if len(out) > 0 {
+		logger.Printf("%s $ %s\n%s", root, script, out)
+	} else {
+		logger.Printf("%s $ %s\nno output", root, script)
+	}
+	return err
 }

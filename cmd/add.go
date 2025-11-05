@@ -9,6 +9,7 @@ import (
 	"github.com/tsukinoko-kun/jmod/logger"
 	"github.com/tsukinoko-kun/jmod/meta"
 	"github.com/tsukinoko-kun/jmod/registry"
+	"github.com/tsukinoko-kun/jmod/statusui"
 	"github.com/tsukinoko-kun/jmod/utils"
 )
 
@@ -16,10 +17,17 @@ var addCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Add a new dependency",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := statusui.Start(); err != nil {
+			return err
+		}
+		defer statusui.Stop()
+
 		// min 1 positional arg
 		if len(args) < 1 {
 			return cmd.Help()
 		}
+
+		ctx := cmd.Context()
 
 		mod := cmd.Flag("mod").Value.String()
 		c, err := config.Load(filepath.Join(meta.Pwd(), mod))
@@ -33,13 +41,13 @@ var addCmd = &cobra.Command{
 				return err
 			}
 			config.Install(c, pack, utils.Must(cmd.Flags().GetBool("dev")))
-			logger.Printf("added %s package %s version %s\n", pack.Source, pack.PackageName, pack.Version)
+			logger.Printf("added %s package %s version %s", pack.Source, pack.PackageName, pack.Version)
 		}
 		if err := config.Write(c); err != nil {
 			return err
 		}
 
-		install.Run(cmd.Context(), meta.Pwd(), utils.Must(cmd.Flags().GetBool("ignore-scripts")))
+		install.Run(ctx, meta.Pwd(), utils.Must(cmd.Flags().GetBool("ignore-scripts")), true)
 
 		return nil
 	},
