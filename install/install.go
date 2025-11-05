@@ -72,7 +72,6 @@ modsLoop:
 					return
 				} else {
 					for _, bin := range bins {
-						logger.Printf("linking %s -> %s", filepath.Join(binDir, bin.BinName), bin.BinPath)
 						if err := link(bin.BinPath, filepath.Join(binDir, bin.BinName)); err != nil {
 							if optional {
 								logger.Printf("failed to link %s: %s", bin.BinName, err)
