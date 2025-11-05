@@ -23,15 +23,6 @@ func npmConfigSafe() string {
 	return "false"
 }
 
-func nodeVersion() string {
-	cmd := exec.Command("node", "--version")
-	out, err := cmd.Output()
-	if err != nil {
-		panic(err)
-	}
-	return strings.TrimSpace(string(out))
-}
-
 var defaultEnv []string = nil
 
 func getDefaultEnv() []string {
@@ -55,7 +46,6 @@ func getDefaultEnv() []string {
 		"npm_config_registry=https://registry.npmjs.org/",
 		"npm_config__jsr_registry=https://npm.jsr.io/",
 		"NODE_ENV=production",
-		"NODE_VERSION="+nodeVersion(),
 		"npm_config_arch="+arch,
 		"npm_config_platform="+runtime.GOOS,
 		"npm_config_tmp="+os.TempDir(),
@@ -71,6 +61,11 @@ func getDefaultEnv() []string {
 	if node, err := exec.LookPath("node"); err == nil {
 		if out, err := exec.Command(node, "--version").Output(); err == nil {
 			nodeVersion = strings.TrimSpace(string(out))
+			defaultEnv = append(defaultEnv, "NODE_VERSION="+nodeVersion)
+		}
+		if out, err := exec.Command(node, "-p", "process.versions.napi").Output(); err == nil {
+			nApiVersion := strings.TrimSpace(string(out))
+			defaultEnv = append(defaultEnv, "npm_config_target="+nApiVersion)
 		}
 	}
 	defaultEnv = append(defaultEnv, fmt.Sprintf("npm_config_user_agent=npm/? node/%s %s %s", nodeVersion, runtime.GOOS, arch))

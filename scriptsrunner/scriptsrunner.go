@@ -28,8 +28,6 @@ func Run(packageJsonPath string, scriptName string, args []string, command strin
 		}
 	}
 	completeEnv = append(completeEnv, "npm_lifecycle_event="+scriptName)
-	completeEnv = append(completeEnv, "npm_config_target="+root)
-	completeEnv = append(completeEnv, "npm_config_modules="+root)
 	completeEnv = append(completeEnv, "npm_package_json="+packageJsonPath)
 	completeEnv = append(completeEnv, "npm_command="+command)
 
