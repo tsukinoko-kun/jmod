@@ -317,8 +317,11 @@ func Load(path string) (*json.Document[*Mod], error) {
 	defer modFile.Close()
 	mod := &Mod{}
 	jsonEditor, err := json.Parse(modFile, mod)
+	if err != nil {
+		return nil, err
+	}
 	mod.fileLocation = modFilePath
-	return jsonEditor, err
+	return jsonEditor, nil
 }
 
 func Write(mod *json.Document[*Mod]) error {
