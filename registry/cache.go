@@ -70,6 +70,27 @@ func getCacheLocation() string {
 	return cacheLocation
 }
 
+// PackageIdentifierFromPath returns the registry source, package name, and version
+// extracted from a path within the cache. The path may point to the package
+// directory itself or to a file within it. If the path is not within the cache,
+// ok will be false.
+func PackageIdentifierFromPath(packagePath string) (source, name, version string, ok bool) {
+	packagePath = filepath.Clean(packagePath)
+	cacheRoot := getCacheLocation()
+	rel, err := filepath.Rel(cacheRoot, packagePath)
+	if err != nil {
+		return "", "", "", false
+	}
+	if rel == "." || strings.HasPrefix(rel, "..") {
+		return "", "", "", false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) < 3 {
+		return "", "", "", false
+	}
+	return parts[0], parts[1], parts[2], true
+}
+
 // GetTarballCacheLocation returns the directory where NPM tarballs are cached.
 // For testing, you can override this by setting the JMOD_TARBALL_CACHE environment variable.
 // To clear the cache during testing, simply delete this directory.

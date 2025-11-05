@@ -11,9 +11,62 @@ import (
 	"github.com/tsukinoko-kun/jmod/config"
 	"github.com/tsukinoko-kun/jmod/logger"
 	"github.com/tsukinoko-kun/jmod/meta"
+	"github.com/tsukinoko-kun/jmod/registry"
 	"github.com/tsukinoko-kun/jmod/scriptsrunner"
 	"github.com/tsukinoko-kun/jmod/statusui"
 )
+
+var (
+	lifecycleScriptsMu   sync.RWMutex
+	lifecycleScriptsSeen = make(map[string]struct{})
+	installedPackagesMu  sync.RWMutex
+	installedPackages    = make(map[string]struct{})
+)
+
+func shouldRunLifecycleScript(key string) bool {
+	lifecycleScriptsMu.RLock()
+	_, exists := lifecycleScriptsSeen[key]
+	lifecycleScriptsMu.RUnlock()
+	if exists {
+		return false
+	}
+	lifecycleScriptsMu.Lock()
+	defer lifecycleScriptsMu.Unlock()
+	if _, exists := lifecycleScriptsSeen[key]; exists {
+		return false
+	}
+	lifecycleScriptsSeen[key] = struct{}{}
+	return true
+}
+
+func lifecycleScriptKey(packageJsonPath string, namePtr, versionPtr *string, scriptName string) string {
+	packageDir := filepath.Dir(packageJsonPath)
+	if resolved, err := filepath.EvalSymlinks(packageDir); err == nil && resolved != "" {
+		packageDir = resolved
+	}
+	source := "workspace"
+	name := ""
+	version := ""
+	if namePtr != nil {
+		name = *namePtr
+	}
+	if versionPtr != nil {
+		version = *versionPtr
+	}
+	if s, n, v, ok := registry.PackageIdentifierFromPath(packageDir); ok {
+		source = s
+		if name == "" {
+			name = n
+		}
+		if version == "" {
+			version = v
+		}
+	}
+	if name == "" {
+		name = filepath.Base(packageDir)
+	}
+	return fmt.Sprintf("%s:%s@%s#%s", source, name, version, scriptName)
+}
 
 func Run(ctx context.Context, root string, ignoreScripts bool, dev bool, optional bool) {
 	mods := config.FindSubMods(root)
@@ -55,8 +108,10 @@ modsLoop:
 					}
 					return
 				}
-				// recursive install
-				Run(ctx, dependency.CachedLocation, ignoreScripts, false, optional)
+				// recursive install - only if not already processed
+				if shouldProcessPackage(dependency.CachedLocation) {
+					Run(ctx, dependency.CachedLocation, ignoreScripts, false, optional)
+				}
 				select {
 				case <-ctx.Done():
 					return
@@ -100,6 +155,44 @@ modsLoop:
 	wg.Wait()
 }
 
+func shouldProcessPackage(cachedLocation string) bool {
+	// Normalize the path - try to resolve symlinks once
+	normalized := filepath.Clean(cachedLocation)
+	var resolvedClean string
+	if resolved, err := filepath.EvalSymlinks(cachedLocation); err == nil {
+		resolvedClean = filepath.Clean(resolved)
+	}
+
+	// Fast path: check normalized path
+	installedPackagesMu.RLock()
+	_, exists := installedPackages[normalized]
+	if !exists && resolvedClean != "" && resolvedClean != normalized {
+		_, exists = installedPackages[resolvedClean]
+	}
+	installedPackagesMu.RUnlock()
+	if exists {
+		return false
+	}
+
+	// Double-checked locking pattern
+	installedPackagesMu.Lock()
+	defer installedPackagesMu.Unlock()
+	if _, exists := installedPackages[normalized]; exists {
+		return false
+	}
+	if resolvedClean != "" && resolvedClean != normalized {
+		if _, exists := installedPackages[resolvedClean]; exists {
+			return false
+		}
+	}
+	// Mark both paths as processed to handle symlink cases
+	installedPackages[normalized] = struct{}{}
+	if resolvedClean != "" && resolvedClean != normalized {
+		installedPackages[resolvedClean] = struct{}{}
+	}
+	return true
+}
+
 func lifecyclePreinstall(packageJsonPath string) error {
 	return runLifecycleScript(packageJsonPath, "preinstall")
 }
@@ -114,6 +207,11 @@ func lifecyclePostinstall(packageJsonPath string) error {
 func runLifecycleScript(packageJsonPath, scriptName string) error {
 	// Get package name for status key
 	pj, err := config.GetPackageJsonForLifecycle(packageJsonPath)
+	key := lifecycleScriptKey(packageJsonPath, pj.Name, pj.Version, scriptName)
+	if !shouldRunLifecycleScript(key) {
+		return nil
+	}
+
 	statusKey := packageJsonPath
 	if err == nil && pj.Name != nil {
 		statusKey = fmt.Sprintf("script:%s", pj.Identifier())
