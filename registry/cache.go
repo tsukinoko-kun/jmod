@@ -251,10 +251,14 @@ func CachePut(ctx context.Context, registry string, r Resolveable) (string, erro
 
 	// Clear status after installation completes
 	// The batching system will handle this smoothly
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		statusui.Clear(statusKey)
-	}()
+	go func(ctx context.Context, key string) {
+		select {
+		case <-time.After(100 * time.Millisecond):
+			statusui.Clear(key)
+		case <-ctx.Done():
+			// Context canceled, do not clear status
+		}
+	}(ctx, statusKey)
 
 	return filepath.Join(packageLocation, "package"), nil
 }
