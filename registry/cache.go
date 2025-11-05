@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -35,6 +36,18 @@ var (
 	cacheLocks = map[string]*sync.Mutex{}
 	cacheLock  = sync.Mutex{}
 )
+
+var tarballSearchIgnoredDirs = map[string]struct{}{
+	"node_modules": {},
+	".git":         {},
+}
+
+type packageCandidate struct {
+	dir      string
+	path     string
+	name     string
+	parseErr error
+}
 
 func lockCache(registry string, packageName string, version string) (unlock func()) {
 	cacheLock.Lock()
@@ -138,7 +151,25 @@ func CacheHas(registry string, packageName string, versionConstrains *semver.Con
 			continue
 		}
 		if versionConstrains.Check(version) {
-			return true, filepath.Join(dir, entry.Name(), "package")
+			pkgDir := filepath.Join(dir, entry.Name())
+			pkgJSONPath := filepath.Join(pkgDir, "package", "package.json")
+			data, err := os.ReadFile(pkgJSONPath)
+			if err != nil {
+				_ = os.RemoveAll(pkgDir)
+				continue
+			}
+			var manifest struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(data, &manifest); err != nil {
+				_ = os.RemoveAll(pkgDir)
+				continue
+			}
+			if strings.TrimSpace(manifest.Name) != packageName {
+				_ = os.RemoveAll(pkgDir)
+				continue
+			}
+			return true, filepath.Join(pkgDir, "package")
 		}
 	}
 	return false, ""
@@ -239,7 +270,7 @@ func CachePut(ctx context.Context, registry string, r Resolveable) (string, erro
 	// Clean up staging on error; on success we rename it and cleanup is moot.
 	defer os.RemoveAll(staging)
 
-	if err := extractArchive(tmpArchive, r.GetSourceFormat(), staging); err != nil {
+	if err := extractArchive(tmpArchive, r.GetSourceFormat(), staging, r.GetName()); err != nil {
 		// Check if error is due to context cancellation
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			// Silently clear the status on cancellation
@@ -613,18 +644,19 @@ func extractArchive(
 	archivePath string,
 	sf SourceFormat,
 	destDir string,
+	expectedPackageName string,
 ) error {
 	switch sf {
 	case SourceFormatTarGz:
-		return extractTarGz(archivePath, destDir)
+		return extractTarGz(archivePath, destDir, expectedPackageName)
 	case SourceFormatTarXz:
-		return extractTarXz(archivePath, destDir)
+		return extractTarXz(archivePath, destDir, expectedPackageName)
 	default:
 		return errors.New("unknown source format")
 	}
 }
 
-func extractTarGz(archivePath, destDir string) error {
+func extractTarGz(archivePath, destDir, expectedPackageName string) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
@@ -637,10 +669,10 @@ func extractTarGz(archivePath, destDir string) error {
 	}
 	defer gz.Close()
 
-	return extractTarStream(gz, destDir)
+	return extractTarStream(gz, destDir, expectedPackageName)
 }
 
-func extractTarXz(archivePath, destDir string) error {
+func extractTarXz(archivePath, destDir, expectedPackageName string) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
@@ -652,10 +684,10 @@ func extractTarXz(archivePath, destDir string) error {
 		return fmt.Errorf("xz reader: %w", err)
 	}
 
-	return extractTarStream(xzr, destDir)
+	return extractTarStream(xzr, destDir, expectedPackageName)
 }
 
-func extractTarStream(r io.Reader, destDir string) error {
+func extractTarStream(r io.Reader, destDir, expectedPackageName string) error {
 	tmp, err := os.CreateTemp("", "jmod-tar-*.tar")
 	if err != nil {
 		return fmt.Errorf("create temp tar: %w", err)
@@ -673,11 +705,11 @@ func extractTarStream(r io.Reader, destDir string) error {
 		return fmt.Errorf("rewind tar: %w", err)
 	}
 
-	return extractTarReadSeeker(tmp, destDir)
+	return extractTarReadSeeker(tmp, destDir, expectedPackageName)
 }
 
-func extractTarReadSeeker(rs io.ReadSeeker, destDir string) error {
-	rootDir, err := determineTarRoot(rs)
+func extractTarReadSeeker(rs io.ReadSeeker, destDir, expectedPackageName string) error {
+	rootDir, err := determineTarRoot(rs, expectedPackageName)
 	if err != nil {
 		return err
 	}
@@ -809,14 +841,15 @@ func extractTarReadSeeker(rs io.ReadSeeker, destDir string) error {
 	return nil
 }
 
-func determineTarRoot(rs io.ReadSeeker) (string, error) {
+func determineTarRoot(rs io.ReadSeeker, expectedPackageName string) (string, error) {
 	if _, err := rs.Seek(0, io.SeekStart); err != nil {
 		return "", fmt.Errorf("rewind tar: %w", err)
 	}
 	tr := tar.NewReader(rs)
 
 	topComponents := map[string]int{}
-	var pkgJSONPaths []string
+	dirChildren := map[string]map[string]struct{}{}
+	dirCandidates := map[string]packageCandidate{}
 
 	for {
 		hdr, err := tr.Next()
@@ -846,20 +879,46 @@ func determineTarRoot(rs io.ReadSeeker) (string, error) {
 			topComponents[comp]++
 		}
 
+		dirPath := path.Dir(normName)
+		if dirPath == "." {
+			dirPath = ""
+		}
+
+		if hdr.FileInfo().IsDir() {
+			recordDirHierarchy(dirChildren, normName)
+		} else {
+			recordDirHierarchy(dirChildren, dirPath)
+		}
+
 		if path.Base(normName) == "package.json" {
-			pkgJSONPaths = append(pkgJSONPaths, normName)
+			candidate := packageCandidate{
+				dir:  dirPath,
+				path: normName,
+			}
+			if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+				candidate.parseErr = fmt.Errorf("unsupported tar entry type %d", hdr.Typeflag)
+				dirCandidates[dirPath] = candidate
+				continue
+			}
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				return "", fmt.Errorf("read %s: %w", normName, err)
+			}
+			var pkg struct {
+				Name string `json:"name"`
+			}
+			candidate.parseErr = json.Unmarshal(data, &pkg)
+			candidate.name = strings.TrimSpace(pkg.Name)
+			dirCandidates[dirPath] = candidate
 		}
 	}
 
-	if len(pkgJSONPaths) > 0 {
-		sort.Slice(pkgJSONPaths, func(i, j int) bool {
-			return depth(pkgJSONPaths[i]) < depth(pkgJSONPaths[j])
-		})
-		dir := path.Dir(pkgJSONPaths[0])
-		if dir == "." {
-			return "", nil
+	if len(dirCandidates) > 0 {
+		root, err := selectPackageJSONRoot(dirChildren, dirCandidates, expectedPackageName)
+		if err == nil {
+			return root, nil
 		}
-		return dir, nil
+		return "", err
 	}
 
 	if len(topComponents) == 1 {
@@ -872,6 +931,7 @@ func determineTarRoot(rs io.ReadSeeker) (string, error) {
 		}
 		tr = tar.NewReader(rs)
 		prefixSlash := prefix + "/"
+		var mismatched []string
 		for {
 			hdr, err := tr.Next()
 			if errors.Is(err, io.EOF) {
@@ -894,9 +954,127 @@ func determineTarRoot(rs io.ReadSeeker) (string, error) {
 				continue
 			}
 			if strings.HasPrefix(normName, prefixSlash) && strings.TrimPrefix(normName, prefixSlash) == "package.json" {
-				return prefix, nil
+				if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+					mismatched = append(mismatched, fmt.Sprintf("unsupported tar entry type %d at %s", hdr.Typeflag, normName))
+					continue
+				}
+				data, err := io.ReadAll(tr)
+				if err != nil {
+					return "", fmt.Errorf("read %s: %w", normName, err)
+				}
+				var pkg struct {
+					Name string `json:"name"`
+				}
+				if err := json.Unmarshal(data, &pkg); err != nil {
+					return "", fmt.Errorf("parse %s: %w", normName, err)
+				}
+				name := strings.TrimSpace(pkg.Name)
+				if expectedPackageName == "" || name == expectedPackageName {
+					return prefix, nil
+				}
+				mismatched = append(mismatched, fmt.Sprintf("%s (at %s)", name, normName))
 			}
 		}
+		if len(mismatched) > 0 {
+			return "", fmt.Errorf("no package.json matched expected package name %q (found %s)", expectedPackageName, strings.Join(mismatched, ", "))
+		}
+	}
+
+	return "", errors.New("package.json not found in archive")
+}
+
+func recordDirHierarchy(children map[string]map[string]struct{}, dir string) {
+	if dir == "" {
+		return
+	}
+	parts := strings.Split(dir, "/")
+	parent := ""
+	for _, part := range parts {
+		current := part
+		if parent != "" {
+			current = parent + "/" + part
+		}
+		if _, ok := children[parent]; !ok {
+			children[parent] = make(map[string]struct{})
+		}
+		children[parent][current] = struct{}{}
+		parent = current
+	}
+}
+
+func shouldIgnoreTarballDir(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	base := path.Base(dir)
+	_, ignored := tarballSearchIgnoredDirs[base]
+	return ignored
+}
+
+func selectPackageJSONRoot(
+	dirChildren map[string]map[string]struct{},
+	dirCandidates map[string]packageCandidate,
+	expectedPackageName string,
+) (string, error) {
+	visited := map[string]struct{}{}
+	queue := []string{""}
+	var (
+		mismatched  []string
+		missingName []string
+		parseErrors []string
+	)
+
+	for len(queue) > 0 {
+		dir := queue[0]
+		queue = queue[1:]
+
+		if _, seen := visited[dir]; seen {
+			continue
+		}
+		visited[dir] = struct{}{}
+
+		if candidate, ok := dirCandidates[dir]; ok {
+			if candidate.parseErr != nil {
+				parseErrors = append(parseErrors, fmt.Sprintf("%s: %v", candidate.path, candidate.parseErr))
+			} else if candidate.name == "" {
+				missingName = append(missingName, candidate.path)
+			} else if expectedPackageName == "" || candidate.name == expectedPackageName {
+				return dir, nil
+			} else {
+				mismatched = append(mismatched, fmt.Sprintf("%s (at %s)", candidate.name, candidate.path))
+			}
+		}
+
+		childSet, ok := dirChildren[dir]
+		if !ok {
+			continue
+		}
+		children := make([]string, 0, len(childSet))
+		for child := range childSet {
+			if _, seen := visited[child]; seen {
+				continue
+			}
+			if shouldIgnoreTarballDir(child) {
+				continue
+			}
+			children = append(children, child)
+		}
+		sort.Strings(children)
+		queue = append(queue, children...)
+	}
+
+	var details []string
+	if len(mismatched) > 0 {
+		details = append(details, fmt.Sprintf("found names: %s", strings.Join(mismatched, ", ")))
+	}
+	if len(missingName) > 0 {
+		details = append(details, fmt.Sprintf("missing name at %s", strings.Join(missingName, ", ")))
+	}
+	if len(parseErrors) > 0 {
+		details = append(details, fmt.Sprintf("parse errors: %s", strings.Join(parseErrors, "; ")))
+	}
+	if len(details) > 0 {
+		return "", fmt.Errorf("no package.json matched expected package name %q (%s)", expectedPackageName, strings.Join(details, "; "))
 	}
 
 	return "", errors.New("package.json not found in archive")

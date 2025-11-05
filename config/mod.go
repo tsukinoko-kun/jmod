@@ -372,6 +372,13 @@ func New() error {
 }
 
 func FindSubMods(root string) []*json.Document[*Mod] {
+	if _, _, _, ok := registry.PackageIdentifierFromPath(root); ok {
+		if mod, err := Load(root); err == nil {
+			return []*json.Document[*Mod]{mod}
+		}
+		return nil
+	}
+
 	ignoreMatcher := ignore.GetIgnoreMatcher(root)
 
 	subMods := []*json.Document[*Mod]{}
