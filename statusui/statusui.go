@@ -150,7 +150,7 @@ func Stop() {
 	if program != nil {
 		program.Quit()
 		program = nil
-		<-time.After(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		fmt.Print(printAfterTuiClose.String())
 		printAfterTuiClose.Reset()
 	}
