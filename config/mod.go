@@ -30,7 +30,7 @@ type Mod struct {
 	Scripts                 map[string]string `json:"scripts"`
 	NpmDependencies         map[string]string `json:"dependencies"`
 	NpmDevDependencies      map[string]string `json:"devDependencies"`
-	NpmOptionalDependencies map[string]string `json:"devDependencies"`
+	NpmOptionalDependencies map[string]string `json:"optionalDependencies"`
 }
 
 func (m *Mod) GetFileLocation() string {
