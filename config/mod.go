@@ -164,7 +164,7 @@ func ResolveBins(ctx context.Context, modulePath string) ([]ResolvedDependencyBi
 	return bins, nil
 }
 
-func runGo(version string, packageName string, constPackageName string, ctx context.Context, ch chan<- ResolvedDependency, m *Mod, optional bool) func() {
+func runGo(version string, packageName string, constPackageName string, ctx context.Context, ch chan<- ResolvedDependency, m *Mod, optional bool, dependencyChain registry.DependencyChain) func() {
 	return func() {
 		if strings.HasPrefix(version, "file:") || strings.HasPrefix(version, "./") || strings.HasPrefix(version, "../") || strings.HasPrefix(version, "/") {
 			absPath := filepath.Join(filepath.Dir(m.GetFileLocation()), strings.TrimPrefix(version, "file:"))
@@ -174,6 +174,7 @@ func runGo(version string, packageName string, constPackageName string, ctx cont
 				case <-ctx.Done():
 				}
 			} else {
+				err = dependencyChain.Err(err)
 				if optional {
 					logger.Printf("local file dep %s not found for mod %s", version, m.GetFileLocation())
 				} else {
@@ -185,21 +186,21 @@ func runGo(version string, packageName string, constPackageName string, ctx cont
 			if optional {
 				logger.Printf("TODO git %s", version)
 			} else {
-				meta.CancelCause(fmt.Errorf("TODO git %s", version))
+				meta.CancelCause(fmt.Errorf("TODO git %s %s", version, dependencyChain.String()))
 			}
 			return
 		} else if strings.HasPrefix(version, "github:") {
 			if optional {
 				logger.Printf("TODO github %s", version)
 			} else {
-				meta.CancelCause(fmt.Errorf("TODO github %s", version))
+				meta.CancelCause(fmt.Errorf("TODO github %s %s", version, dependencyChain.String()))
 			}
 			return
 		} else if pck, ok := strings.CutPrefix(version, "jsr:"); ok {
 			if optional {
 				logger.Printf("TODO jsr %s", pck)
 			} else {
-				meta.CancelCause(fmt.Errorf("TODO jsr %s", pck))
+				meta.CancelCause(fmt.Errorf("TODO jsr %s %s", pck, dependencyChain.String()))
 			}
 			return
 		} else if alias, ok := strings.CutPrefix(version, "npm:"); ok {
@@ -218,6 +219,7 @@ func runGo(version string, packageName string, constPackageName string, ctx cont
 				var newErr error
 				versionConstraint, newErr = semver.NewConstraint(tagVersion)
 				if newErr != nil {
+					err = dependencyChain.Err(err)
 					if optional {
 						logger.Printf("invalid version constraint %s for %s in %s, skipping", version, packageName, m.GetFileLocation())
 					} else {
@@ -227,9 +229,9 @@ func runGo(version string, packageName string, constPackageName string, ctx cont
 				}
 			} else {
 				if optional {
-					logger.Printf("invalid version constraint %s for %s in %s, skipping", version, packageName, m.GetFileLocation())
+					logger.Printf("invalid version constraint %s for %s in %s, skipping (%s)", version, packageName, m.GetFileLocation(), dependencyChain.String())
 				} else {
-					meta.CancelCause(fmt.Errorf("invalid version constraint %s for %s in %s, skipping", version, packageName, m.GetFileLocation()))
+					meta.CancelCause(fmt.Errorf("invalid version constraint %s for %s in %s, skipping (%s)", version, packageName, m.GetFileLocation(), dependencyChain.String()))
 				}
 				return
 			}
@@ -244,6 +246,7 @@ func runGo(version string, packageName string, constPackageName string, ctx cont
 		resolver, err := registry.Npm_Resolve(ctx, packageName, versionConstraint)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
+				err = dependencyChain.Err(err)
 				if optional {
 					logger.Printf("failed to resolve %s@%s: %s", packageName, version, err)
 				} else {
@@ -256,6 +259,7 @@ func runGo(version string, packageName string, constPackageName string, ctx cont
 		cachedLocation, err := registry.CachePut(ctx, "npm", resolver)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
+				err = dependencyChain.Err(err)
 				if optional {
 					logger.Printf("failed to cache %s@%s: %s", packageName, resolver.GetVersion(), err)
 				} else {
@@ -272,27 +276,27 @@ func runGo(version string, packageName string, constPackageName string, ctx cont
 	}
 }
 
-func (m *Mod) ResolveDependenciesDeep(ctx context.Context, dev bool, optional bool) <-chan ResolvedDependency {
+func (m *Mod) ResolveDependenciesDeep(ctx context.Context, dev bool, optional bool, dependencyChain registry.DependencyChain) <-chan ResolvedDependency {
 	wg := sync.WaitGroup{}
 
 	ch := make(chan ResolvedDependency, 16)
 
 	for packageName, version := range m.NpmDependencies {
 		constPackageName := packageName
-		wg.Go(runGo(version, packageName, constPackageName, ctx, ch, m, false))
+		wg.Go(runGo(version, packageName, constPackageName, ctx, ch, m, false, dependencyChain))
 	}
 
 	if dev {
 		for packageName, version := range m.NpmDevDependencies {
 			constPackageName := packageName
-			wg.Go(runGo(version, packageName, constPackageName, ctx, ch, m, false))
+			wg.Go(runGo(version, packageName, constPackageName, ctx, ch, m, false, dependencyChain))
 		}
 	}
 
 	if optional {
 		for packageName, version := range m.NpmOptionalDependencies {
 			constPackageName := packageName
-			wg.Go(runGo(version, packageName, constPackageName, ctx, ch, m, true))
+			wg.Go(runGo(version, packageName, constPackageName, ctx, ch, m, true, dependencyChain))
 		}
 	}
 

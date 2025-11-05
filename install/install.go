@@ -68,7 +68,7 @@ func lifecycleScriptKey(packageJsonPath string, namePtr, versionPtr *string, scr
 	return fmt.Sprintf("%s:%s@%s#%s", source, name, version, scriptName)
 }
 
-func Run(ctx context.Context, root string, ignoreScripts bool, dev bool, optional bool) {
+func Run(ctx context.Context, root string, ignoreScripts bool, dev bool, optional bool, dependencyChain registry.DependencyChain) {
 	mods := config.FindSubMods(root)
 
 	wg := sync.WaitGroup{}
@@ -83,9 +83,11 @@ modsLoop:
 
 		wg.Go(func() {
 			mod := modDoc.TypedData
+			dependencyChain := dependencyChain.With(mod.GetFileLocation())
 
 			if !ignoreScripts {
 				if err := lifecyclePreinstall(mod.GetFileLocation()); err != nil {
+					err = dependencyChain.Err(err)
 					if optional {
 						logger.Printf("failed to run lifecycle preinstall for %s: %s", mod.GetFileLocation(), err)
 					} else {
@@ -99,8 +101,9 @@ modsLoop:
 			nodeModulesDir := filepath.Join(modRoot, "node_modules")
 			binDir := filepath.Join(nodeModulesDir, ".bin")
 
-			for dependency := range mod.ResolveDependenciesDeep(ctx, dev, optional) {
+			for dependency := range mod.ResolveDependenciesDeep(ctx, dev, optional, dependencyChain) {
 				if err := link(dependency.CachedLocation, filepath.Join(nodeModulesDir, dependency.PackageName)); err != nil {
+					err = dependencyChain.Err(err)
 					if optional {
 						logger.Printf("failed to link %s: %s", dependency.PackageName, err)
 					} else {
@@ -110,7 +113,7 @@ modsLoop:
 				}
 				// recursive install - only if not already processed
 				if shouldProcessPackage(dependency.CachedLocation) {
-					Run(ctx, dependency.CachedLocation, ignoreScripts, false, optional)
+					Run(ctx, dependency.CachedLocation, ignoreScripts, false, optional, dependencyChain)
 				}
 				select {
 				case <-ctx.Done():
@@ -119,6 +122,7 @@ modsLoop:
 				}
 				// setup executables
 				if bins, err := config.ResolveBins(ctx, dependency.CachedLocation); err != nil {
+					err = dependencyChain.Err(err)
 					if optional {
 						logger.Printf("failed to resolve bins for %s: %s", dependency.CachedLocation, err)
 					} else {
@@ -128,6 +132,7 @@ modsLoop:
 				} else {
 					for _, bin := range bins {
 						if err := link(bin.BinPath, filepath.Join(binDir, bin.BinName)); err != nil {
+							err = dependencyChain.Err(err)
 							if optional {
 								logger.Printf("failed to link %s: %s", bin.BinName, err)
 							} else {
@@ -141,6 +146,7 @@ modsLoop:
 
 			if !ignoreScripts {
 				if err := lifecyclePostinstall(mod.GetFileLocation()); err != nil {
+					err = dependencyChain.Err(err)
 					if optional {
 						logger.Printf("failed to run lifecycle postinstall for %s: %s", mod.GetFileLocation(), err)
 					} else {

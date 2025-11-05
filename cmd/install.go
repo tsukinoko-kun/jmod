@@ -23,7 +23,7 @@ var installCmd = &cobra.Command{
 		defer statusui.Stop()
 
 		ctx := cmd.Context()
-		install.Run(ctx, meta.Pwd(), utils.Must(cmd.Flags().GetBool("ignore-scripts")), true, true)
+		install.Run(ctx, meta.Pwd(), utils.Must(cmd.Flags().GetBool("ignore-scripts")), true, true, nil)
 		return nil
 	},
 }
