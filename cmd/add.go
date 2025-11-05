@@ -47,7 +47,7 @@ var addCmd = &cobra.Command{
 			return err
 		}
 
-		install.Run(ctx, meta.Pwd(), utils.Must(cmd.Flags().GetBool("ignore-scripts")), true)
+		install.Run(ctx, meta.Pwd(), utils.Must(cmd.Flags().GetBool("ignore-scripts")), true, true, nil)
 
 		return nil
 	},

@@ -129,7 +129,7 @@ func Start() error {
 		tea.WithOutput(os.Stderr),
 		tea.WithoutSignalHandler(), // Don't intercept signals
 		tea.WithInput(nil),         // No input needed
-		tea.WithFPS(10),            // Limit to 10 FPS to avoid rapid re-renders
+		// tea.WithFPS(10),            // Limit to 10 FPS to avoid rapid re-renders
 	)
 
 	// Start program in background

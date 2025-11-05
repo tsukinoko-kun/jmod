@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/tsukinoko-kun/jmod/logger"
 )
@@ -46,8 +47,9 @@ func runShell(root, script string, args []string, env []string) error {
 	if err != nil && len(out) > 0 {
 		return fmt.Errorf("%s: %w", string(out), err)
 	}
-	if len(out) > 0 {
-		logger.Printf("%s $ %s\n%s", root, script, out)
+	outStr := strings.TrimSpace(string(out))
+	if len(outStr) > 0 {
+		logger.Printf("%s $ %s\n%s", root, script, outStr)
 	} else {
 		logger.Printf("%s $ %s\nno output", root, script)
 	}
