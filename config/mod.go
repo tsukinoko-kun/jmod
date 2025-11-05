@@ -76,6 +76,16 @@ type packageJsonForLifecycle struct {
 	Scripts *map[string]string `json:"scripts,omitempty"`
 }
 
+func (p *packageJsonForLifecycle) Identifier() string {
+	if p.Name != nil {
+		if p.Version != nil {
+			return fmt.Sprintf("%s@%s", *p.Name, *p.Version)
+		}
+		return *p.Name
+	}
+	return ""
+}
+
 type packageJsonForBin struct {
 	Name *string           `json:"name"`
 	Bin  map[string]string `json:"bin"`
@@ -136,11 +146,7 @@ func getPackageJsonForBin(packageJsonPath string) (packageJsonForBin, error) {
 	return pj, nil
 }
 
-func GetPackageJsonForLifecycle(root string) (packageJsonForLifecycle, error) {
-	packageJsonPath, err := getPackageFilePath(root)
-	if err != nil {
-		return packageJsonForLifecycle{}, err
-	}
+func GetPackageJsonForLifecycle(packageJsonPath string) (packageJsonForLifecycle, error) {
 	f, err := os.Open(packageJsonPath)
 	if err != nil {
 		return packageJsonForLifecycle{}, err

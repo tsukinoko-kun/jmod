@@ -27,8 +27,17 @@ modsLoop:
 			break modsLoop
 		default:
 		}
+
 		wg.Go(func() {
 			mod := modDoc.TypedData
+
+			if !ignoreScripts {
+				if err := lifecyclePreinstall(mod.GetFileLocation()); err != nil {
+					meta.CancelCause(err)
+					return
+				}
+			}
+
 			modRoot := filepath.Dir(mod.GetFileLocation())
 			nodeModulesDir := filepath.Join(modRoot, "node_modules")
 			binDir := filepath.Join(nodeModulesDir, ".bin")
@@ -38,16 +47,13 @@ modsLoop:
 					meta.CancelCause(fmt.Errorf("failed to link %s: %w", dependency.PackageName, err))
 					return
 				}
-				// run lifecycle scripts before installing nested dependencies so preinstall can prepare assets
-				if !ignoreScripts {
-					if err := lifecyclePreinstall(dependency.CachedLocation); err != nil {
-						// Error already logged in lifecyclePreinstall
-						meta.CancelCause(err)
-						return
-					}
-				}
 				// recursive install
 				Run(ctx, dependency.CachedLocation, ignoreScripts, false)
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
 				// setup executables
 				if bins, err := config.ResolveBins(ctx, dependency.CachedLocation); err != nil {
 					meta.CancelCause(fmt.Errorf("failed to resolve bins for %s: %w", mod.GetFileLocation(), err))
@@ -61,13 +67,12 @@ modsLoop:
 						}
 					}
 				}
-				// run lifecycle scripts after installing nested dependencies so postinstall can prepare assets
-				if !ignoreScripts {
-					if err := lifecyclePostinstall(dependency.CachedLocation); err != nil {
-						// Error already logged in lifecyclePostinstall
-						meta.CancelCause(err)
-						return
-					}
+			}
+
+			if !ignoreScripts {
+				if err := lifecyclePostinstall(mod.GetFileLocation()); err != nil {
+					meta.CancelCause(err)
+					return
 				}
 			}
 		})
@@ -76,39 +81,30 @@ modsLoop:
 	wg.Wait()
 }
 
-func lifecyclePreinstall(root string) error {
-	return runLifecycleScript(root, "preinstall")
+func lifecyclePreinstall(packageJsonPath string) error {
+	return runLifecycleScript(packageJsonPath, "preinstall")
 }
 
-func lifecyclePostinstall(root string) error {
-	if err := runLifecycleScript(root, "install"); err != nil {
+func lifecyclePostinstall(packageJsonPath string) error {
+	if err := runLifecycleScript(packageJsonPath, "install"); err != nil {
 		return err
 	}
-	return runLifecycleScript(root, "postinstall")
+	return runLifecycleScript(packageJsonPath, "postinstall")
 }
 
-func runLifecycleScript(root, scriptName string) error {
+func runLifecycleScript(packageJsonPath, scriptName string) error {
 	// Get package name for status key
-	pj, err := config.GetPackageJsonForLifecycle(root)
-	statusKey := root
+	pj, err := config.GetPackageJsonForLifecycle(packageJsonPath)
+	statusKey := packageJsonPath
 	if err == nil && pj.Name != nil {
-		if pj.Version != nil {
-			statusKey = fmt.Sprintf("script:%s@%s", *pj.Name, *pj.Version)
-		} else {
-			statusKey = fmt.Sprintf("script:%s", *pj.Name)
-		}
+		statusKey = fmt.Sprintf("script:%s", pj.Identifier())
 	}
 
 	statusui.Set(statusKey, statusui.TextStatus{
-		Text: fmt.Sprintf("🔧 Running %s script", scriptName),
+		Text: fmt.Sprintf("🔧 Running %s script for %s", scriptName, pj.Identifier()),
 	})
 
-	env := map[string]string{
-		"npm_lifecycle_event": scriptName,
-		"npm_config_target":   root,
-		"npm_config_modules":  root,
-	}
-	if err := scriptsrunner.Run(root, scriptName, nil, env); err != nil {
+	if err := scriptsrunner.Run(packageJsonPath, scriptName, nil, "install"); err != nil {
 		if errors.Is(err, scriptsrunner.ErrScriptNotFound) {
 			// Clear status if script not found (not an error)
 			statusui.Clear(statusKey)
@@ -116,11 +112,11 @@ func runLifecycleScript(root, scriptName string) error {
 		}
 		if pj.Name != nil {
 			if pj.Version != nil {
-				return fmt.Errorf("Failed to run %s script for %s@%s: %w", scriptName, *pj.Name, *pj.Version, err)
+				return fmt.Errorf("failed to run %s script for %s@%s: %w", scriptName, *pj.Name, *pj.Version, err)
 			}
-			return fmt.Errorf("Failed to run %s script for %s: %w", scriptName, *pj.Name, err)
+			return fmt.Errorf("failed to run %s script for %s: %w", scriptName, *pj.Name, err)
 		}
-		return fmt.Errorf("Failed to run %s script: %w", scriptName, err)
+		return fmt.Errorf("failed to run %s script: %w", scriptName, err)
 	}
 
 	// Success - clear after a moment

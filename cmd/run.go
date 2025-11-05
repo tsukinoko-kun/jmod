@@ -16,7 +16,7 @@ var runCmd = &cobra.Command{
 		if len(args) == 0 {
 			return fmt.Errorf("script name required")
 		}
-		return scriptsrunner.Run(meta.Pwd(), args[0], args[1:], nil)
+		return scriptsrunner.Run(meta.Pwd(), args[0], args[1:], "run")
 	},
 }
 

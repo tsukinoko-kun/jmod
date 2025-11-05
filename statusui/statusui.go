@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -149,6 +150,7 @@ func Stop() {
 	if program != nil {
 		program.Quit()
 		program = nil
+		<-time.After(100 * time.Millisecond)
 		fmt.Print(printAfterTuiClose.String())
 		printAfterTuiClose.Reset()
 	}

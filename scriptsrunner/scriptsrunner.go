@@ -1,7 +1,6 @@
 package scriptsrunner
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -9,60 +8,46 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/tsukinoko-kun/jmod/config"
+	"github.com/tsukinoko-kun/jmod/logger"
 )
-
-type packageJson struct {
-	Scripts map[string]string `json:"scripts"`
-}
-
-func getPackageJson(root string) (packageJson, error) {
-	packageJsonPath := filepath.Join(root, "package.json")
-	f, err := os.Open(packageJsonPath)
-	if err != nil {
-		return packageJson{}, err
-	}
-	defer f.Close()
-	var pj packageJson
-	jd := json.NewDecoder(f)
-	err = jd.Decode(&pj)
-	if err != nil {
-		return packageJson{}, err
-	}
-	return pj, nil
-}
 
 var jsExts = []string{".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"}
 
 var ErrScriptNotFound = errors.New("script not found")
 
-func Run(root string, scriptName string, args []string, env map[string]string) error {
+func Run(packageJsonPath string, scriptName string, args []string, command string) error {
+	root := filepath.Dir(packageJsonPath)
 	// combine env with the current process env
 	completeEnv := make([]string, 0, len(getDefaultEnv()))
 	completeEnv = append(completeEnv, getDefaultEnv()...)
-	for k, v := range env {
-		completeEnv = append(completeEnv, fmt.Sprintf("%s=%s", k, v))
-	}
 	for i, e := range completeEnv {
 		if v, ok := strings.CutPrefix(e, "PATH="); ok {
 			completeEnv[i] = "PATH=" + filepath.Join(root, "node_modules", ".bin") + string(filepath.ListSeparator) + v
 		}
 	}
+	completeEnv = append(completeEnv, "npm_lifecycle_event="+scriptName)
+	completeEnv = append(completeEnv, "npm_config_target="+root)
+	completeEnv = append(completeEnv, "npm_config_modules="+root)
+	completeEnv = append(completeEnv, "npm_package_json="+packageJsonPath)
+	completeEnv = append(completeEnv, "npm_command="+command)
 
-	pj, err := getPackageJson(root)
+	pj, err := config.GetPackageJsonForLifecycle(packageJsonPath)
 	if err != nil {
 		return err
 	}
+	if pj.Scripts == nil {
+		return fmt.Errorf("%w: %s", ErrScriptNotFound, scriptName)
+	}
+	scripts := *pj.Scripts
 
-	script, ok := pj.Scripts[scriptName]
+	script, ok := scripts[scriptName]
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrScriptNotFound, scriptName)
 	}
 
-	if env != nil {
-		if _, ok := env["npm_lifecycle_event"]; ok {
-			completeEnv = append(completeEnv, fmt.Sprintf("npm_lifecycle_script=%s", script))
-		}
-	}
+	completeEnv = append(completeEnv, fmt.Sprintf("npm_lifecycle_script=%s", script))
 
 	// check if the script is a path to a js file
 	if slices.Contains(jsExts, filepath.Ext(script)) {
@@ -102,6 +87,9 @@ func runJsScript(root string, scriptName string, args []string, env []string) er
 			return fmt.Errorf("%s: %w", string(out), err)
 		}
 		return err
+	}
+	if len(out) > 0 {
+		logger.Printf("%s $ %s\n%s", root, scriptName, string(out))
 	}
 	return nil
 }

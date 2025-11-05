@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+
+	"github.com/tsukinoko-kun/jmod/logger"
 )
 
 type shellRunner func(root, script string, args []string, env []string) error
@@ -29,8 +31,11 @@ func pickRunner() (shellRunner, error) {
 
 			// Capture output and log errors
 			out, err := cmd.CombinedOutput()
-			if err != nil && len(out) > 0 {
-				return fmt.Errorf("%s: %w", string(out), err)
+			if len(out) > 0 {
+				if err != nil {
+					return fmt.Errorf("%s: %w", string(out), err)
+				}
+				logger.Printf("%s $ %s\n%s", root, script, string(out))
 			}
 			return err
 		}, nil
@@ -53,8 +58,11 @@ func pickRunner() (shellRunner, error) {
 
 			// Capture output and log errors
 			out, err := cmd.CombinedOutput()
-			if err != nil && len(out) > 0 {
-				return fmt.Errorf("%s: %w", string(out), err)
+			if len(out) > 0 {
+				if err != nil {
+					return fmt.Errorf("%s: %w", string(out), err)
+				}
+				logger.Printf("%s $ %s\n%s", root, script, string(out))
 			}
 			return err
 		}, nil
@@ -86,8 +94,11 @@ func pickRunner() (shellRunner, error) {
 
 			// Capture output and log errors
 			out, err := cmd.CombinedOutput()
-			if err != nil && len(out) > 0 {
-				return fmt.Errorf("%s: %w", string(out), err)
+			if len(out) > 0 {
+				if err != nil {
+					return fmt.Errorf("%s: %w", string(out), err)
+				}
+				logger.Printf("%s $ %s\n%s", root, script, string(out))
 			}
 			return err
 		}, nil
