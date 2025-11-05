@@ -441,16 +441,22 @@ func Install(mod *json.Document[*Mod], pack registry.Package, dev bool) error {
 func Uninstall(mod *json.Document[*Mod], name string) error {
 	doneSomething := false
 	if mod.TypedData.NpmDependencies != nil {
-		delete(mod.TypedData.NpmDependencies, name)
-		doneSomething = true
+		if _, ok := mod.TypedData.NpmDependencies[name]; ok {
+			delete(mod.TypedData.NpmDependencies, name)
+			doneSomething = true
+		}
 	}
 	if mod.TypedData.NpmDevDependencies != nil {
-		delete(mod.TypedData.NpmDevDependencies, name)
-		doneSomething = true
+		if _, ok := mod.TypedData.NpmDevDependencies[name]; ok {
+			delete(mod.TypedData.NpmDevDependencies, name)
+			doneSomething = true
+		}
 	}
 	if mod.TypedData.NpmOptionalDependencies != nil {
-		delete(mod.TypedData.NpmOptionalDependencies, name)
-		doneSomething = true
+		if _, ok := mod.TypedData.NpmOptionalDependencies[name]; ok {
+			delete(mod.TypedData.NpmOptionalDependencies, name)
+			doneSomething = true
+		}
 	}
 	if !doneSomething {
 		return fmt.Errorf("no such dependency %s", name)
