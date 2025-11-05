@@ -162,7 +162,7 @@ func GetPackageJsonForLifecycle(packageJsonPath string) (packageJsonForLifecycle
 }
 
 func ResolveBins(ctx context.Context, root string) ([]ResolvedDependencyBin, error) {
-	packageJsonPath, err := getPackageFilePath(root)
+	packageJsonPath, err := GetPackageFilePath(root)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +292,7 @@ depLoop:
 }
 
 func Load(path string) (*json.Document[*Mod], error) {
-	modFilePath, err := getPackageFilePath(path)
+	modFilePath, err := GetPackageFilePath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +322,7 @@ var packageFileName = []string{
 	"package.jsonc",
 }
 
-func getPackageFilePath(root string) (string, error) {
+func GetPackageFilePath(root string) (string, error) {
 	for _, fileName := range packageFileName {
 		packageFilePath := filepath.Join(root, fileName)
 		if _, err := os.Stat(packageFilePath); err == nil {

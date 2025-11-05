@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"github.com/tsukinoko-kun/jmod/config"
 	"github.com/tsukinoko-kun/jmod/meta"
 	"github.com/tsukinoko-kun/jmod/scriptsrunner"
 )
@@ -16,10 +18,18 @@ var runCmd = &cobra.Command{
 		if len(args) == 0 {
 			return fmt.Errorf("script name required")
 		}
-		return scriptsrunner.Run(meta.Pwd(), args[0], args[1:], "run")
+
+		mod := cmd.Flag("mod").Value.String()
+		packageJsonPath, err := config.GetPackageFilePath(filepath.Join(meta.Pwd(), mod))
+		if err != nil {
+			return err
+		}
+
+		return scriptsrunner.Run(packageJsonPath, args[0], args[1:], "run")
 	},
 }
 
 func init() {
+	runCmd.Flags().String("mod", ".", "module to add the dependency to")
 	rootCmd.AddCommand(runCmd)
 }
