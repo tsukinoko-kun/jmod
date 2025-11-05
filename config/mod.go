@@ -176,9 +176,9 @@ func runGo(version string, packageName string, constPackageName string, ctx cont
 			} else {
 				err = dependencyChain.Err(err)
 				if optional {
-					logger.Printf("local file dep %s not found for mod %s", version, m.GetFileLocation())
+					logger.Printf("local file dep %s not found for mod %s: %v", version, m.GetFileLocation(), err)
 				} else {
-					meta.CancelCause(fmt.Errorf("local file dep %s not found for mod %s", version, m.GetFileLocation()))
+					meta.CancelCause(fmt.Errorf("local file dep %s not found for mod %s: %w", version, m.GetFileLocation(), err))
 				}
 			}
 			return
@@ -221,9 +221,9 @@ func runGo(version string, packageName string, constPackageName string, ctx cont
 				if newErr != nil {
 					err = dependencyChain.Err(err)
 					if optional {
-						logger.Printf("invalid version constraint %s for %s in %s, skipping", version, packageName, m.GetFileLocation())
+						logger.Printf("invalid version constraint %s for %s in %s, skipping: %v", version, packageName, m.GetFileLocation(), err)
 					} else {
-						meta.CancelCause(fmt.Errorf("invalid version constraint %s for %s in %s, skipping", version, packageName, m.GetFileLocation()))
+						meta.CancelCause(fmt.Errorf("invalid version constraint %s for %s in %s, skipping: %w", version, packageName, m.GetFileLocation(), err))
 					}
 					return
 				}
