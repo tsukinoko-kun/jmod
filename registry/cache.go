@@ -386,21 +386,30 @@ type progressReader struct {
 	total     int64
 	current   int64
 	lastPrint int64
+	mu        sync.Mutex
 }
 
 func (pr *progressReader) Read(p []byte) (int, error) {
 	n, err := pr.reader.Read(p)
+	pr.mu.Lock()
 	pr.current += int64(n)
-
 	// Update status every 100KB or at completion
 	shouldUpdate := pr.current-pr.lastPrint >= 100*1024 || pr.current == pr.total || err == io.EOF
 	if shouldUpdate {
 		pr.lastPrint = pr.current
-		statusui.Set(pr.statusKey, statusui.ProgressStatus{
-			Label:   pr.label,
-			Current: pr.current,
-			Total:   pr.total,
+		// Copy values for use outside the lock
+		current := pr.current
+		total := pr.total
+		label := pr.label
+		statusKey := pr.statusKey
+		pr.mu.Unlock()
+		statusui.Set(statusKey, statusui.ProgressStatus{
+			Label:   label,
+			Current: current,
+			Total:   total,
 		})
+	} else {
+		pr.mu.Unlock()
 	}
 
 	return n, err
