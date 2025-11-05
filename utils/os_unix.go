@@ -7,6 +7,8 @@ import (
 	"os"
 )
 
+// On Unix-like systems, this function adds the executable flag to the file without changing any other permissions.
+// EnsureExecutable is a no-op on Windows because Windows doesn't have the concept of an executable flag.
 func EnsureExecutable(path string) error {
 	stat, err := os.Stat(path)
 	if err != nil {
