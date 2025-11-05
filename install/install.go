@@ -63,11 +63,11 @@ modsLoop:
 				default:
 				}
 				// setup executables
-				if bins, err := config.ResolveBins(ctx, mod.GetFileLocation()); err != nil {
+				if bins, err := config.ResolveBins(ctx, dependency.CachedLocation); err != nil {
 					if optional {
-						logger.Printf("failed to resolve bins for %s: %s", mod.GetFileLocation(), err)
+						logger.Printf("failed to resolve bins for %s: %s", dependency.CachedLocation, err)
 					} else {
-						meta.CancelCause(fmt.Errorf("failed to resolve bins for %s: %w", mod.GetFileLocation(), err))
+						meta.CancelCause(fmt.Errorf("failed to resolve bins for %s: %w", dependency.CachedLocation, err))
 					}
 					return
 				} else {

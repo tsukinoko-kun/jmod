@@ -140,7 +140,11 @@ func GetPackageJsonForLifecycle(packageJsonPath string) (packageJsonForLifecycle
 	return pj, nil
 }
 
-func ResolveBins(ctx context.Context, packageJsonPath string) ([]ResolvedDependencyBin, error) {
+func ResolveBins(ctx context.Context, modulePath string) ([]ResolvedDependencyBin, error) {
+	packageJsonPath, err := GetPackageFilePath(modulePath)
+	if err != nil {
+		return nil, err
+	}
 	pj, err := getPackageJsonForBin(packageJsonPath)
 	if err != nil {
 		return nil, err
