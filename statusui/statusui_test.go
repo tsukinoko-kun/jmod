@@ -1,6 +1,7 @@
 package statusui
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -72,7 +73,7 @@ func TestProgressStatus(t *testing.T) {
 			if result == "" {
 				t.Error("Expected non-empty render result")
 			}
-			if len(result) > 0 && !containsString(result, tt.contains) {
+			if len(result) > 0 && !strings.Contains(result, tt.contains) {
 				t.Errorf("Expected render to contain %q, got %q", tt.contains, result)
 			}
 		})
@@ -90,7 +91,7 @@ func TestTextStatus(t *testing.T) {
 func TestErrorStatus(t *testing.T) {
 	status := ErrorStatus{Message: "Failed", Err: nil}
 	result := status.Render()
-	if !containsString(result, "Failed") {
+	if !strings.Contains(result, "Failed") {
 		t.Errorf("Expected render to contain 'Failed', got %q", result)
 	}
 }
@@ -98,22 +99,7 @@ func TestErrorStatus(t *testing.T) {
 func TestSuccessStatus(t *testing.T) {
 	status := SuccessStatus{Message: "Done"}
 	result := status.Render()
-	if !containsString(result, "Done") {
+	if !strings.Contains(result, "Done") {
 		t.Errorf("Expected render to contain 'Done', got %q", result)
 	}
 }
-
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && 
-		(s == substr || len(s) > len(substr) && findSubstring(s, substr))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
